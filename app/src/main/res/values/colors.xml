@@ -1,0 +1,6 @@
+<resources>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+    <color name="accel_primary">#0B57D0</color>
+    <color name="accel_surface">#FFF8F9FA</color>
+</resources>
