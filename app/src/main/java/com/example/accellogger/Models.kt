@@ -1,7 +1,5 @@
 package com.example.accellogger
 
-import android.hardware.SensorManager
-
 data class AccelSample(
     val sensorTimestampNs: Long,
     val systemTimeMs: Long,
@@ -61,15 +59,6 @@ data class LogFileItem(
     val modifiedTimeMs: Long,
 )
 
-enum class LogRateOption(
-    val labelResId: Int,
-    val sensorDelay: Int,
-) {
-    UI(R.string.sample_rate_ui, SensorManager.SENSOR_DELAY_UI),
-    NORMAL(R.string.sample_rate_normal, SensorManager.SENSOR_DELAY_NORMAL),
-    GAME(R.string.sample_rate_game, SensorManager.SENSOR_DELAY_GAME),
-}
-
 data class MainUiState(
     val sensorAvailable: Boolean,
     val sensorDetails: SensorDetails?,
@@ -78,7 +67,7 @@ data class MainUiState(
     val sampleCount: Long,
     val elapsedMs: Long,
     val statusText: String,
-    val selectedRate: LogRateOption,
+    val sampleRateHz: Int,
     val lastSavedFileName: String?,
     val lastSavedFilePath: String?,
 ) {
@@ -91,7 +80,7 @@ data class MainUiState(
             sampleCount = 0L,
             elapsedMs = 0L,
             statusText = "",
-            selectedRate = LogRateOption.NORMAL,
+            sampleRateHz = 50,
             lastSavedFileName = lastLog?.fileName,
             lastSavedFilePath = lastLog?.absolutePath,
         )

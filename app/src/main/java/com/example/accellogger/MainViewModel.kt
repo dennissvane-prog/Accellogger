@@ -3,9 +3,6 @@ package com.example.accellogger
 import android.app.Application
 import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.DefaultLifecycleObserver
-import androidx.lifecycle.LifecycleOwner
-import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -52,51 +49,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var loggingStartedElapsedRealtimeMs = 0L
     private var loggingStartedSensorTimestampNs: Long? = null
     private var elapsedJob: Job? = null
-    private val processObserver = object : DefaultLifecycleObserver {
-        override fun onStop(owner: LifecycleOwner) {
-            appVisible = false
-            if (_uiState.value.isLogging) {
-                viewModelScope.launch {
-                    stopLoggingInternal(appContext.getString(R.string.foreground_stop_message))
-                }
-            } else {
-                accelerometerLogger.stop()
-            }
-        }
-    }
-
-    init {
-        ProcessLifecycleOwner.get().lifecycle.addObserver(processObserver)
-    }
 
     fun onAppVisible() {
         appVisible = true
         refreshLastSavedLog()
         if (_uiState.value.sensorAvailable && !_uiState.value.isLogging) {
-            accelerometerLogger.startLiveUpdates(_uiState.value.selectedRate.sensorDelay)
+            accelerometerLogger.startLiveUpdates(_uiState.value.sampleRateHz)
         }
     }
 
-    fun onAppHidden(
-        isChangingConfigurations: Boolean,
-        appStillForeground: Boolean,
-    ) {
+    fun onAppHidden() {
         appVisible = false
-        if (isChangingConfigurations) {
+    }
+
+    fun setSampleRateHz(sampleRateHz: Int) {
+        if (sampleRateHz <= 0) {
             return
         }
 
-        if (appStillForeground && !_uiState.value.isLogging) {
-            accelerometerLogger.stop()
-        }
-    }
-
-    fun selectRate(position: Int) {
-        val option = LogRateOption.entries.getOrNull(position) ?: return
-        _uiState.update { it.copy(selectedRate = option) }
+        _uiState.update { it.copy(sampleRateHz = sampleRateHz) }
 
         if (_uiState.value.sensorAvailable && !_uiState.value.isLogging && appVisible) {
-            accelerometerLogger.startLiveUpdates(option.sensorDelay)
+            accelerometerLogger.startLiveUpdates(sampleRateHz)
         }
     }
 
@@ -141,7 +115,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 statusText = appContext.getString(R.string.status_logging),
             )
         }
-        accelerometerLogger.startLogging(state.selectedRate.sensorDelay)
+        accelerometerLogger.startLogging(state.sampleRateHz)
     }
 
     fun stopLogging() {
@@ -252,7 +226,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         loggingStartedSensorTimestampNs = null
 
         if (appVisible && _uiState.value.sensorAvailable) {
-            accelerometerLogger.startLiveUpdates(_uiState.value.selectedRate.sensorDelay)
+            accelerometerLogger.startLiveUpdates(_uiState.value.sampleRateHz)
         }
 
         when {
@@ -272,7 +246,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     override fun onCleared() {
-        ProcessLifecycleOwner.get().lifecycle.removeObserver(processObserver)
         accelerometerLogger.stop()
         super.onCleared()
     }

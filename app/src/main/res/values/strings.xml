@@ -11,7 +11,8 @@
     <string name="y_value_label">Y: %1$.3f m/s²</string>
     <string name="z_value_label">Z: %1$.3f m/s²</string>
     <string name="magnitude_value_label">Magnitude: %1$.3f m/s²</string>
-    <string name="sample_rate_label">Sample Rate</string>
+    <string name="sample_rate_label">Sample Rate (Hz)</string>
+    <string name="sample_rate_hint">Enter a number, like 50</string>
     <string name="status_label">Status: %1$s</string>
     <string name="status_idle">Idle</string>
     <string name="status_logging">Logging</string>
@@ -34,15 +35,11 @@
     <string name="cancel">Cancel</string>
     <string name="confirm">Confirm</string>
     <string name="saved_file_message">Saved log: %1$s</string>
-    <string name="foreground_stop_message">Logging stopped because the app left the foreground.</string>
     <string name="export_error_no_file">No log file is available to share.</string>
     <string name="file_create_error">Unable to create a log file.</string>
     <string name="file_write_error">Unable to write to the current log file.</string>
     <string name="file_close_error">Unable to close the current log file cleanly.</string>
     <string name="storage_unavailable_error">App-specific external storage is unavailable.</string>
-    <string name="sample_rate_ui">Low / UI</string>
-    <string name="sample_rate_normal">Normal</string>
-    <string name="sample_rate_game">Game</string>
     <string name="share_sheet_title">Share accelerometer log</string>
     <string name="log_file_details">%1$s • %2$s</string>
     <string name="unknown_sensor_value">Unknown</string>

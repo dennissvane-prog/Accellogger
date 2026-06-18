@@ -90,11 +90,20 @@
             android:text="@string/sample_rate_label"
             android:textAppearance="?attr/textAppearanceTitleMedium" />
 
-        <androidx.appcompat.widget.AppCompatSpinner
-            android:id="@+id/sampleRateSpinner"
+        <com.google.android.material.textfield.TextInputLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp" />
+            android:layout_marginTop="8dp">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/sampleRateInput"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="@string/sample_rate_hint"
+                android:inputType="number"
+                android:maxLines="1" />
+
+        </com.google.android.material.textfield.TextInputLayout>
 
         <TextView
             android:id="@+id/statusText"

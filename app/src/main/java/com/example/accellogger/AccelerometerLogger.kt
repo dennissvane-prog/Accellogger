@@ -38,14 +38,14 @@ class AccelerometerLogger(
         )
     }
 
-    fun startLiveUpdates(rate: Int) {
+    fun startLiveUpdates(sampleRateHz: Int) {
         captureSamples = false
-        register(rate)
+        register(sampleRateHz)
     }
 
-    fun startLogging(rate: Int) {
+    fun startLogging(sampleRateHz: Int) {
         captureSamples = true
-        register(rate)
+        register(sampleRateHz)
     }
 
     fun stop() {
@@ -56,10 +56,15 @@ class AccelerometerLogger(
         captureSamples = false
     }
 
-    private fun register(rate: Int) {
+    private fun register(sampleRateHz: Int) {
         val sensor = accelerometer
         if (sensor == null) {
             onError("No accelerometer found on this device.")
+            return
+        }
+
+        if (sampleRateHz <= 0) {
+            onError("Sample rate must be greater than zero.")
             return
         }
 
@@ -68,7 +73,8 @@ class AccelerometerLogger(
             isRegistered = false
         }
 
-        val registered = sensorManager.registerListener(this, sensor, rate)
+        val samplingPeriodUs = (1_000_000L / sampleRateHz).coerceAtLeast(1L).toInt()
+        val registered = sensorManager.registerListener(this, sensor, samplingPeriodUs)
         if (!registered) {
             onError("Unable to register the accelerometer listener.")
             return

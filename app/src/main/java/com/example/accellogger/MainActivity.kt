@@ -2,12 +2,11 @@ package com.example.accellogger
 
 import android.content.Intent
 import android.os.Bundle
-import android.widget.ArrayAdapter
+import androidx.core.widget.doAfterTextChanged
 import android.widget.Toast
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.example.accellogger.databinding.ActivityMainBinding
@@ -26,28 +25,13 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        val sampleRateLabels = LogRateOption.entries.map { getString(it.labelResId) }
-        val spinnerAdapter = ArrayAdapter(
-            this,
-            android.R.layout.simple_spinner_dropdown_item,
-            sampleRateLabels,
-        )
-        binding.sampleRateSpinner.adapter = spinnerAdapter
-        binding.sampleRateSpinner.setSelection(LogRateOption.entries.indexOf(LogRateOption.NORMAL))
-        binding.sampleRateSpinner.setOnItemSelectedListener(
-            object : android.widget.AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(
-                    parent: android.widget.AdapterView<*>?,
-                    view: android.view.View?,
-                    position: Int,
-                    id: Long,
-                ) {
-                    viewModel.selectRate(position)
-                }
-
-                override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
-            },
-        )
+        binding.sampleRateInput.setText(viewModel.uiState.value.sampleRateHz.toString())
+        binding.sampleRateInput.doAfterTextChanged { text ->
+            val sampleRateHz = text?.toString()?.toIntOrNull()
+            if (sampleRateHz != null) {
+                viewModel.setSampleRateHz(sampleRateHz)
+            }
+        }
 
         binding.startStopButton.setOnClickListener {
             if (viewModel.uiState.value.isLogging) {
@@ -80,12 +64,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStop() {
         super.onStop()
-        val appStillForeground =
-            ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
-        viewModel.onAppHidden(
-            isChangingConfigurations = isChangingConfigurations,
-            appStillForeground = appStillForeground,
-        )
+        viewModel.onAppHidden()
     }
 
     private fun render(state: MainUiState) {
