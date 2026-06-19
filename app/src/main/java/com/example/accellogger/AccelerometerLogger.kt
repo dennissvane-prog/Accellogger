@@ -14,6 +14,10 @@ class AccelerometerLogger(
     private val onError: (String) -> Unit,
 ) : SensorEventListener {
 
+    private companion object {
+        const val GRAVITY_FILTER_ALPHA = 0.8f
+    }
+
     private val sensorManager =
         context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
 
@@ -24,6 +28,10 @@ class AccelerometerLogger(
     private var isRegistered = false
     private var liveUpdateIntervalMs = 100L
     private var lastLiveUpdateMs = 0L
+    private var gravityX = 0f
+    private var gravityY = 0f
+    private var gravityZ = 0f
+    private var gravityInitialized = false
 
     fun hasAccelerometer(): Boolean = accelerometer != null
 
@@ -81,6 +89,7 @@ class AccelerometerLogger(
         }
 
         lastLiveUpdateMs = 0L
+        gravityInitialized = false
         isRegistered = true
     }
 
@@ -90,12 +99,14 @@ class AccelerometerLogger(
         val eventWallClockMs =
             callbackWallClockMs - ((callbackElapsedRealtimeNs - event.timestamp) / 1_000_000L)
 
+        val linearAcceleration = filterGravity(event.values)
+
         val sample = AccelSample(
             sensorTimestampNs = event.timestamp,
             systemTimeMs = eventWallClockMs,
-            x = event.values[0],
-            y = event.values[1],
-            z = event.values[2],
+            x = linearAcceleration[0],
+            y = linearAcceleration[1],
+            z = linearAcceleration[2],
             accuracy = event.accuracy,
         )
 
@@ -111,4 +122,23 @@ class AccelerometerLogger(
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
+
+    private fun filterGravity(values: FloatArray): FloatArray {
+        if (!gravityInitialized) {
+            gravityX = values[0]
+            gravityY = values[1]
+            gravityZ = values[2]
+            gravityInitialized = true
+        } else {
+            gravityX = GRAVITY_FILTER_ALPHA * gravityX + (1f - GRAVITY_FILTER_ALPHA) * values[0]
+            gravityY = GRAVITY_FILTER_ALPHA * gravityY + (1f - GRAVITY_FILTER_ALPHA) * values[1]
+            gravityZ = GRAVITY_FILTER_ALPHA * gravityZ + (1f - GRAVITY_FILTER_ALPHA) * values[2]
+        }
+
+        return floatArrayOf(
+            values[0] - gravityX,
+            values[1] - gravityY,
+            values[2] - gravityZ,
+        )
+    }
 }
