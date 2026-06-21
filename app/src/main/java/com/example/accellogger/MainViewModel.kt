@@ -133,7 +133,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update {
             it.copy(
                 lastSavedFileName = latest?.fileName,
-                lastSavedFilePath = latest?.absolutePath,
+                lastSavedStorageReference = latest?.storageReference,
             )
         }
     }
@@ -217,8 +217,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 } else {
                     appContext.getString(R.string.sensor_unavailable)
                 },
-                lastSavedFileName = stoppedFile?.name ?: it.lastSavedFileName,
-                lastSavedFilePath = stoppedFile?.absolutePath ?: it.lastSavedFilePath,
+                lastSavedFileName = stoppedFile?.fileName ?: it.lastSavedFileName,
+                lastSavedStorageReference = stoppedFile?.storageReference ?: it.lastSavedStorageReference,
             )
         }
 

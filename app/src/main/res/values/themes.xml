@@ -2,7 +2,7 @@
     <style name="Theme.AccelLogger" parent="Theme.Material3.DayNight.NoActionBar">
         <item name="colorPrimary">@color/accel_primary</item>
         <item name="android:statusBarColor" tools:targetApi="l">@color/accel_primary</item>
-        <item name="android:navigationBarColor">@color/black</item>
+        <item name="android:navigationBarColor">@color/accel_surface</item>
         <item name="android:windowBackground">@color/accel_surface</item>
     </style>
 </resources>

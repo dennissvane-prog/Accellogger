@@ -54,7 +54,7 @@ data class SensorDetails(
 
 data class LogFileItem(
     val fileName: String,
-    val absolutePath: String,
+    val storageReference: String,
     val sizeBytes: Long,
     val modifiedTimeMs: Long,
 )
@@ -69,7 +69,7 @@ data class MainUiState(
     val statusText: String,
     val sampleRateHz: Int,
     val lastSavedFileName: String?,
-    val lastSavedFilePath: String?,
+    val lastSavedStorageReference: String?,
 ) {
     companion object {
         fun initial(sensorAvailable: Boolean, sensorDetails: SensorDetails?, lastLog: LogFileItem?) = MainUiState(
@@ -82,7 +82,7 @@ data class MainUiState(
             statusText = "",
             sampleRateHz = 50,
             lastSavedFileName = lastLog?.fileName,
-            lastSavedFilePath = lastLog?.absolutePath,
+            lastSavedStorageReference = lastLog?.storageReference,
         )
     }
 }

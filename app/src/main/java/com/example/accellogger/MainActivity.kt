@@ -2,17 +2,16 @@ package com.example.accellogger
 
 import android.content.Intent
 import android.os.Bundle
-import androidx.core.widget.doAfterTextChanged
 import android.widget.Toast
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import androidx.core.widget.doAfterTextChanged
 import com.example.accellogger.databinding.ActivityMainBinding
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import kotlinx.coroutines.launch
-import java.io.File
 import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity() {
@@ -116,7 +115,7 @@ class MainActivity : AppCompatActivity() {
             getString(R.string.start_logging)
         }
 
-        val hasLastLog = !state.lastSavedFilePath.isNullOrBlank()
+        val hasLastLog = !state.lastSavedStorageReference.isNullOrBlank()
         binding.shareLastLogButton.isEnabled = hasLastLog
         binding.lastFileText.text = getString(
             R.string.last_file_label,
@@ -140,21 +139,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun shareLastLog() {
-        val path = viewModel.uiState.value.lastSavedFilePath
-        if (path.isNullOrBlank()) {
-            handleEvent(MainUiEvent.Error(getString(R.string.export_error_no_file)))
-            return
-        }
-
-        val file = File(path)
-        if (!file.exists()) {
+        val storageReference = viewModel.uiState.value.lastSavedStorageReference
+        if (storageReference.isNullOrBlank()) {
             handleEvent(MainUiEvent.Error(getString(R.string.export_error_no_file)))
             return
         }
 
         startActivity(
             Intent.createChooser(
-                ShareHelper.createShareIntent(this, file),
+                ShareHelper.createShareIntent(this, storageReference),
                 getString(R.string.share_sheet_title),
             ),
         )

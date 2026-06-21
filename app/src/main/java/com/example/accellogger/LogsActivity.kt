@@ -11,7 +11,6 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 
 class LogsActivity : AppCompatActivity() {
 
@@ -51,8 +50,7 @@ class LogsActivity : AppCompatActivity() {
     }
 
     private fun shareLog(item: LogFileItem) {
-        val file = File(item.absolutePath)
-        if (!file.exists()) {
+        if (item.storageReference.isBlank()) {
             Toast.makeText(this, R.string.export_error_no_file, Toast.LENGTH_SHORT).show()
             loadLogs()
             return
@@ -60,7 +58,7 @@ class LogsActivity : AppCompatActivity() {
 
         startActivity(
             Intent.createChooser(
-                ShareHelper.createShareIntent(this, file),
+                ShareHelper.createShareIntent(this, item.storageReference),
                 getString(R.string.share_sheet_title),
             ),
         )
@@ -73,7 +71,7 @@ class LogsActivity : AppCompatActivity() {
             .setPositiveButton(R.string.confirm) { _, _ ->
                 lifecycleScope.launch {
                     withContext(Dispatchers.IO) {
-                        logFileManager.deleteLog(item.absolutePath)
+                        logFileManager.deleteLog(item.storageReference)
                     }
                     loadLogs()
                 }
