@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.SystemClock
@@ -52,7 +53,16 @@ class LoggingService : Service() {
         when (intent?.action) {
             ACTION_START_LOGGING -> {
                 val sampleRateHz = intent.getIntExtra(EXTRA_SAMPLE_RATE_HZ, 0)
-                startForeground(NOTIFICATION_ID, buildNotification(_state.value.sampleCount))
+                val notification = buildNotification(_state.value.sampleCount)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    startForeground(
+                        NOTIFICATION_ID,
+                        notification,
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_HEALTH,
+                    )
+                } else {
+                    startForeground(NOTIFICATION_ID, notification)
+                }
                 startLogging(sampleRateHz)
             }
 
