@@ -5,6 +5,7 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.os.PowerManager
 import android.os.SystemClock
 
 class AccelerometerLogger(
@@ -20,6 +21,12 @@ class AccelerometerLogger(
 
     private val sensorManager =
         context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
+    private val powerManager =
+        context.getSystemService(Context.POWER_SERVICE) as PowerManager
+    private val wakeLock =
+        powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AccelLogger:SensorLock").apply {
+            setReferenceCounted(false)
+        }
 
     private val accelerometer: Sensor? =
         sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
@@ -61,6 +68,9 @@ class AccelerometerLogger(
             sensorManager.unregisterListener(this)
             isRegistered = false
         }
+        if (wakeLock.isHeld) {
+            wakeLock.release()
+        }
         captureSamples = false
     }
 
@@ -81,9 +91,16 @@ class AccelerometerLogger(
             isRegistered = false
         }
 
+        if (!wakeLock.isHeld) {
+            wakeLock.acquire()
+        }
+
         val samplingPeriodUs = (1_000_000L / sampleRateHz).coerceAtLeast(1L).toInt()
         val registered = sensorManager.registerListener(this, sensor, samplingPeriodUs)
         if (!registered) {
+            if (wakeLock.isHeld) {
+                wakeLock.release()
+            }
             onError("Unable to register the accelerometer listener.")
             return
         }
