@@ -234,7 +234,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             stoppedFile != null && emitSavedMessage -> {
                 _events.tryEmit(
                     MainUiEvent.Info(
-                        appContext.getString(R.string.saved_file_message, stoppedFile.name),
+                        appContext.getString(R.string.saved_file_message, stoppedFile.fileName),
                     ),
                 )
             }
