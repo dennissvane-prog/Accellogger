@@ -43,4 +43,7 @@
     <string name="share_sheet_title">Share accelerometer log</string>
     <string name="log_file_details">%1$s • %2$s</string>
     <string name="unknown_sensor_value">Unknown</string>
+    <string name="logging_notification_channel_name">Background logging</string>
+    <string name="logging_notification_title">AccelLogger is recording</string>
+    <string name="logging_notification_text">Samples: %1$d</string>
 </resources>

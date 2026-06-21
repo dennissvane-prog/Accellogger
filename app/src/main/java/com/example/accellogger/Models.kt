@@ -91,3 +91,13 @@ sealed interface MainUiEvent {
     data class Error(val message: String) : MainUiEvent
     data class Info(val message: String) : MainUiEvent
 }
+
+data class LoggingServiceState(
+    val isLogging: Boolean = false,
+    val currentSample: AccelSample? = null,
+    val sampleCount: Long = 0L,
+    val elapsedMs: Long = 0L,
+    val sampleRateHz: Int = 0,
+    val lastSavedFileName: String? = null,
+    val lastSavedStorageReference: String? = null,
+)

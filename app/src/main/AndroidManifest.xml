@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_HEALTH" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <uses-feature
@@ -11,6 +13,11 @@
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.AccelLogger">
+
+        <service
+            android:name=".LoggingService"
+            android:exported="false"
+            android:foregroundServiceType="health" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

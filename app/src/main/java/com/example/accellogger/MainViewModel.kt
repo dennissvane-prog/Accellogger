@@ -1,11 +1,9 @@
 package com.example.accellogger
 
 import android.app.Application
-import android.os.SystemClock
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -21,9 +19,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val logFileManager = LogFileManager(appContext)
     private val accelerometerLogger = AccelerometerLogger(
         context = appContext,
-        onSample = ::onSampleReceived,
+        onSample = {},
         onLiveReading = ::onLiveReading,
-        onError = ::onSensorError,
+        onError = ::emitError,
     )
 
     private val _events = MutableSharedFlow<MainUiEvent>(extraBufferCapacity = 4)
@@ -45,10 +43,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
 
     private var appVisible = false
-    private var sampleCount = 0L
-    private var loggingStartedElapsedRealtimeMs = 0L
-    private var loggingStartedSensorTimestampNs: Long? = null
-    private var elapsedJob: Job? = null
+
+    init {
+        viewModelScope.launch {
+            LoggingService.state.collect(::applyLoggingState)
+        }
+        viewModelScope.launch {
+            LoggingService.events.collect { event -> _events.emit(event) }
+        }
+    }
 
     fun onAppVisible() {
         appVisible = true
@@ -60,6 +63,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onAppHidden() {
         appVisible = false
+        if (!_uiState.value.isLogging) {
+            accelerometerLogger.stop()
+        }
     }
 
     fun setSampleRateHz(sampleRateHz: Int) {
@@ -84,38 +90,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        try {
-            logFileManager.startNewLog()
-        } catch (exception: Exception) {
-            emitError(exception.message ?: appContext.getString(R.string.file_create_error))
-            return
-        }
-
-        sampleCount = 0L
-        loggingStartedElapsedRealtimeMs = SystemClock.elapsedRealtime()
-        loggingStartedSensorTimestampNs = null
-        elapsedJob?.cancel()
-        elapsedJob = viewModelScope.launch {
-            while (true) {
-                _uiState.update {
-                    it.copy(
-                        elapsedMs = SystemClock.elapsedRealtime() - loggingStartedElapsedRealtimeMs,
-                        sampleCount = sampleCount,
-                    )
-                }
-                delay(250L)
-            }
-        }
-
-        _uiState.update {
-            it.copy(
-                isLogging = true,
-                elapsedMs = 0L,
-                sampleCount = 0L,
-                statusText = appContext.getString(R.string.status_logging),
-            )
-        }
-        accelerometerLogger.startLogging(state.sampleRateHz)
+        accelerometerLogger.stop()
+        ContextCompat.startForegroundService(
+            appContext,
+            LoggingService.startIntent(appContext, state.sampleRateHz),
+        )
     }
 
     fun stopLogging() {
@@ -123,9 +102,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        viewModelScope.launch {
-            stopLoggingInternal(null)
-        }
+        appContext.startService(LoggingService.stopIntent(appContext))
     }
 
     private fun refreshLastSavedLog() {
@@ -138,106 +115,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun onSampleReceived(sample: AccelSample) {
-        if (!_uiState.value.isLogging) {
+    private fun onLiveReading(sample: AccelSample) {
+        if (_uiState.value.isLogging) {
             return
         }
 
-        sampleCount += 1L
-        val sessionStartSensorTimestampNs =
-            loggingStartedSensorTimestampNs ?: sample.sensorTimestampNs.also {
-                loggingStartedSensorTimestampNs = it
-            }
-        val loggedSample = LoggedSample(
-            sampleIndex = sampleCount,
-            elapsedMs = (sample.sensorTimestampNs - sessionStartSensorTimestampNs) / 1_000_000L,
-            sensorTimestampNs = sample.sensorTimestampNs,
-            systemTimeMs = sample.systemTimeMs,
-            x = sample.x,
-            y = sample.y,
-            z = sample.z,
-            accuracy = sample.accuracy,
-        )
-
-        if (!logFileManager.enqueueSample(loggedSample)) {
-            viewModelScope.launch {
-                emitError(
-                    logFileManager.consumeWriteFailureMessage()
-                        ?: appContext.getString(R.string.file_write_error),
-                )
-                stopLoggingInternal(null, emitSavedMessage = false)
-            }
-        }
-    }
-
-    private fun onLiveReading(sample: AccelSample) {
         _uiState.update {
             it.copy(
                 currentSample = sample,
-                sampleCount = sampleCount,
             )
         }
     }
 
-    private fun onSensorError(message: String) {
-        emitError(message)
-        if (_uiState.value.isLogging) {
-            viewModelScope.launch {
-                stopLoggingInternal(null, emitSavedMessage = false)
-            }
-        }
-    }
-
-    private suspend fun stopLoggingInternal(
-        infoMessage: String?,
-        emitSavedMessage: Boolean = true,
-    ) {
-        accelerometerLogger.stop()
-        elapsedJob?.cancel()
-        elapsedJob = null
-
-        val stoppedFile = try {
-            logFileManager.stopLog()
-        } catch (exception: Exception) {
-            emitError(exception.message ?: appContext.getString(R.string.file_close_error))
-            null
-        }
-
+    private fun applyLoggingState(state: LoggingServiceState) {
         _uiState.update {
             it.copy(
-                isLogging = false,
-                elapsedMs = if (loggingStartedElapsedRealtimeMs == 0L) {
+                isLogging = state.isLogging,
+                currentSample = state.currentSample ?: it.currentSample,
+                elapsedMs = if (state.isLogging || state.elapsedMs > 0L) {
+                    state.elapsedMs
+                } else {
                     it.elapsedMs
-                } else {
-                    SystemClock.elapsedRealtime() - loggingStartedElapsedRealtimeMs
                 },
-                sampleCount = sampleCount,
-                statusText = if (it.sensorAvailable) {
-                    appContext.getString(R.string.status_idle)
-                } else {
-                    appContext.getString(R.string.sensor_unavailable)
+                sampleCount = state.sampleCount,
+                statusText = when {
+                    state.isLogging -> appContext.getString(R.string.status_logging)
+                    !it.sensorAvailable -> appContext.getString(R.string.sensor_unavailable)
+                    state.sampleCount == 0L && state.elapsedMs == 0L -> it.statusText
+                    else -> appContext.getString(R.string.status_idle)
                 },
-                lastSavedFileName = stoppedFile?.fileName ?: it.lastSavedFileName,
-                lastSavedStorageReference = stoppedFile?.storageReference ?: it.lastSavedStorageReference,
+                lastSavedFileName = state.lastSavedFileName ?: it.lastSavedFileName,
+                lastSavedStorageReference = state.lastSavedStorageReference ?: it.lastSavedStorageReference,
             )
         }
 
-        loggingStartedElapsedRealtimeMs = 0L
-        loggingStartedSensorTimestampNs = null
-
-        if (appVisible && _uiState.value.sensorAvailable) {
+        if (!state.isLogging && appVisible && _uiState.value.sensorAvailable) {
             accelerometerLogger.startLiveUpdates(_uiState.value.sampleRateHz)
-        }
-
-        when {
-            infoMessage != null -> _events.tryEmit(MainUiEvent.Info(infoMessage))
-            stoppedFile != null && emitSavedMessage -> {
-                _events.tryEmit(
-                    MainUiEvent.Info(
-                        appContext.getString(R.string.saved_file_message, stoppedFile.fileName),
-                    ),
-                )
-            }
         }
     }
 

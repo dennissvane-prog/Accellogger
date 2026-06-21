@@ -3,6 +3,10 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+val versionMajor = 1
+val versionMinor = 4
+val versionBuild = 0
+
 android {
     namespace = "com.example.accellogger"
     compileSdk = 35
@@ -11,8 +15,8 @@ android {
         applicationId = "com.example.accellogger"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.3"
+        versionCode = versionMajor * 10_000 + versionMinor * 100 + versionBuild
+        versionName = "$versionMajor.$versionMinor.$versionBuild"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
