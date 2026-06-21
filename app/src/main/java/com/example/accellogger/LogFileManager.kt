@@ -235,26 +235,27 @@ class LogFileManager(private val context: Context) {
     }
 
     private fun listMediaStoreLogs(): List<LogFileItem> {
-        val relativePath = "${Environment.DIRECTORY_DOWNLOADS}/AccelLogger/"
         val projection = arrayOf(
             MediaStore.MediaColumns._ID,
             MediaStore.MediaColumns.DISPLAY_NAME,
+            MediaStore.MediaColumns.RELATIVE_PATH,
+            MediaStore.MediaColumns.IS_PENDING,
             MediaStore.MediaColumns.SIZE,
             MediaStore.MediaColumns.DATE_MODIFIED,
         )
-        val selection = "${MediaStore.MediaColumns.RELATIVE_PATH} = ? AND ${MediaStore.MediaColumns.IS_PENDING} = 0"
-        val selectionArgs = arrayOf(relativePath)
         val sortOrder = "${MediaStore.MediaColumns.DATE_MODIFIED} DESC"
 
         return context.contentResolver.query(
             MediaStore.Downloads.EXTERNAL_CONTENT_URI,
             projection,
-            selection,
-            selectionArgs,
+            null,
+            null,
             sortOrder,
         )?.use { cursor ->
             val idColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
             val nameColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
+            val relativePathColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.RELATIVE_PATH)
+            val pendingColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.IS_PENDING)
             val sizeColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
             val modifiedColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_MODIFIED)
 
@@ -262,11 +263,14 @@ class LogFileManager(private val context: Context) {
                 while (cursor.moveToNext()) {
                     val id = cursor.getLong(idColumn)
                     val fileName = cursor.getString(nameColumn) ?: continue
+                    val relativePath = cursor.getString(relativePathColumn).orEmpty()
+                    val isPending = cursor.getInt(pendingColumn) != 0
                     val sizeBytes = cursor.getLong(sizeColumn)
                     val modifiedTimeMs = cursor.getLong(modifiedColumn) * 1000L
                     val uri = Uri.withAppendedPath(MediaStore.Downloads.EXTERNAL_CONTENT_URI, id.toString())
 
-                    if (uri.toString() != currentLogReference) {
+                    val isOurLog = fileName.startsWith("accelerometer_log_") && fileName.endsWith(".csv", ignoreCase = true) && relativePath.contains("AccelLogger")
+                    if (isOurLog && !isPending && uri.toString() != currentLogReference) {
                         add(
                             LogFileItem(
                                 fileName = fileName,
