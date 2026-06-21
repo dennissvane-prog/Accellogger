@@ -184,7 +184,6 @@ class LogFileManager(private val context: Context) {
             put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
             put(MediaStore.MediaColumns.MIME_TYPE, "text/csv")
             put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
-            put(MediaStore.MediaColumns.IS_PENDING, 1)
             put(MediaStore.MediaColumns.DATE_MODIFIED, timestampMs / 1000L)
         }
 
@@ -239,7 +238,6 @@ class LogFileManager(private val context: Context) {
             MediaStore.MediaColumns._ID,
             MediaStore.MediaColumns.DISPLAY_NAME,
             MediaStore.MediaColumns.RELATIVE_PATH,
-            MediaStore.MediaColumns.IS_PENDING,
             MediaStore.MediaColumns.SIZE,
             MediaStore.MediaColumns.DATE_MODIFIED,
         )
@@ -255,7 +253,6 @@ class LogFileManager(private val context: Context) {
             val idColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
             val nameColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
             val relativePathColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.RELATIVE_PATH)
-            val pendingColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.IS_PENDING)
             val sizeColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
             val modifiedColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_MODIFIED)
 
@@ -264,13 +261,12 @@ class LogFileManager(private val context: Context) {
                     val id = cursor.getLong(idColumn)
                     val fileName = cursor.getString(nameColumn) ?: continue
                     val relativePath = cursor.getString(relativePathColumn).orEmpty()
-                    val isPending = cursor.getInt(pendingColumn) != 0
                     val sizeBytes = cursor.getLong(sizeColumn)
                     val modifiedTimeMs = cursor.getLong(modifiedColumn) * 1000L
                     val uri = Uri.withAppendedPath(MediaStore.Downloads.EXTERNAL_CONTENT_URI, id.toString())
 
                     val isOurLog = fileName.startsWith("accelerometer_log_") && fileName.endsWith(".csv", ignoreCase = true) && relativePath.contains("AccelLogger")
-                    if (isOurLog && !isPending && uri.toString() != currentLogReference) {
+                    if (isOurLog) {
                         add(
                             LogFileItem(
                                 fileName = fileName,
@@ -292,7 +288,6 @@ class LogFileManager(private val context: Context) {
             ?: return emptyList()
 
         return files
-            .filterNot { it.absolutePath == currentLogReference }
             .sortedByDescending { it.lastModified() }
             .map {
                 LogFileItem(
@@ -315,7 +310,6 @@ class LogFileManager(private val context: Context) {
         }
 
         val values = ContentValues().apply {
-            put(MediaStore.MediaColumns.IS_PENDING, 0)
             put(MediaStore.MediaColumns.DATE_MODIFIED, System.currentTimeMillis() / 1000L)
         }
         context.contentResolver.update(parsedUri, values, null, null)
