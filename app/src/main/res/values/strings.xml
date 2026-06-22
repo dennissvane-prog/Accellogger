@@ -1,5 +1,6 @@
 <resources>
     <string name="app_name">AccelLogger</string>
+    <string name="app_version_label">v.%1$s</string>
     <string name="sensor_name_label">Sensor: %1$s</string>
     <string name="sensor_vendor_label">Vendor: %1$s</string>
     <string name="sensor_resolution_label">Resolution: %1$.4f m/s²</string>

@@ -1,5 +1,7 @@
 package com.example.accellogger
 
+import java.time.Instant
+
 data class AccelSample(
     val sensorTimestampNs: Long,
     val systemTimeMs: Long,
@@ -22,6 +24,12 @@ data class LoggedSample(
     val z: Float,
     val accuracy: Int,
 ) {
+    val utcTimestamp: String
+        get() = Instant.ofEpochMilli(systemTimeMs).toString()
+
+    val magnitude: Double
+        get() = kotlin.math.sqrt((x * x + y * y + z * z).toDouble())
+
     fun toCsvRow(): String {
         return buildString {
             append(sampleIndex)
@@ -32,11 +40,15 @@ data class LoggedSample(
             append(',')
             append(systemTimeMs)
             append(',')
+            append(utcTimestamp)
+            append(',')
             append(String.format(java.util.Locale.US, "%.3f", x))
             append(',')
             append(String.format(java.util.Locale.US, "%.3f", y))
             append(',')
             append(String.format(java.util.Locale.US, "%.3f", z))
+            append(',')
+            append(String.format(java.util.Locale.US, "%.3f", magnitude))
             append(',')
             append(accuracy)
             append('\n')

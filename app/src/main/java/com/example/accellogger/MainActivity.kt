@@ -2,6 +2,9 @@ package com.example.accellogger
 
 import android.content.Intent
 import android.os.Bundle
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.style.RelativeSizeSpan
 import android.widget.Toast
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
@@ -23,6 +26,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        binding.titleText.text = buildTitleText()
 
         binding.sampleRateInput.setText(viewModel.uiState.value.sampleRateHz.toString())
         binding.sampleRateInput.doAfterTextChanged { text ->
@@ -158,5 +162,16 @@ class MainActivity : AppCompatActivity() {
         val minutes = TimeUnit.MILLISECONDS.toMinutes(elapsedMs) % 60
         val seconds = TimeUnit.MILLISECONDS.toSeconds(elapsedMs) % 60
         return String.format("%02d:%02d:%02d", hours, minutes, seconds)
+    }
+
+    private fun buildTitleText(): CharSequence {
+        val appName = getString(R.string.app_name)
+        val versionText = getString(R.string.app_version_label, BuildConfig.VERSION_NAME)
+        return SpannableStringBuilder(appName).apply {
+            append(' ')
+            val versionStart = length
+            append(versionText)
+            setSpan(RelativeSizeSpan(0.55f), versionStart, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
     }
 }
