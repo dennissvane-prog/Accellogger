@@ -6,12 +6,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.BufferedWriter
 import java.io.File
@@ -20,123 +15,28 @@ import java.io.OutputStream
 import java.io.OutputStreamWriter
 import java.time.Instant
 import java.time.ZoneId
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 class LogFileManager(private val context: Context) {
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var writer: BufferedWriter? = null
-    private var writerChannel: Channel<LoggedSample>? = null
-    private var currentLogItem: LogFileItem? = null
-    private var writerJob: Job? = null
-    @Volatile
-    private var writeFailureMessage: String? = null
-    private var currentLogDateKey: String? = null
-    private var currentLogReference: String? = null
-
-    fun startNewLog(): LogFileItem {
-        check(writer == null) { "A log session is already active." }
-
-        writeFailureMessage = null
-
-        val initialFileState = openLogFile(System.currentTimeMillis())
-
-        val channel = Channel<LoggedSample>(capacity = 2048)
-        val job = scope.launch {
-            var bufferedRows = 0
-            var activeFileState = initialFileState
-            try {
-                for (sample in channel) {
-                    val sampleDateKey = dayKeyFor(sample.systemTimeMs)
-                    if (sampleDateKey != currentLogDateKey) {
-                        activeFileState.writer.flush()
-                        activeFileState.writer.close()
-                        publishLogItem(activeFileState.item)
-                        activeFileState = openLogFile(sample.systemTimeMs)
-                        currentLogDateKey = sampleDateKey
-                        writer = activeFileState.writer
-                        currentLogReference = activeFileState.item.storageReference
-                        currentLogItem = activeFileState.item
-                        bufferedRows = 0
-                    }
-
-                    activeFileState.writer.write(sample.toCsvRow())
-                    bufferedRows++
-                    if (bufferedRows >= 25) {
-                        activeFileState.writer.flush()
-                        bufferedRows = 0
-                    }
-                }
-                activeFileState.writer.flush()
-            } catch (exception: Exception) {
-                writeFailureMessage = exception.message ?: context.getString(R.string.file_write_error)
-                channel.close(exception)
-            } finally {
-                try {
-                    activeFileState.writer.close()
-                } catch (_: Exception) {
-                    // Ignore close failures after a write error or stop.
-                }
+    suspend fun appendEventSamples(eventSamples: List<LoggedSample>): LogFileItem? =
+        withContext(Dispatchers.IO) {
+            if (eventSamples.isEmpty()) {
+                return@withContext null
             }
+
+            var latestItem: LogFileItem? = null
+            eventSamples
+                .groupBy { dayKeyFor(it.systemTimeMs) }
+                .values
+                .forEach { samplesForDay ->
+                    latestItem = appendSamplesToDailyLog(
+                        timestampMs = samplesForDay.first().systemTimeMs,
+                        samples = samplesForDay,
+                    )
+                }
+
+            latestItem
         }
-
-        writer = initialFileState.writer
-        writerChannel = channel
-        currentLogItem = initialFileState.item
-        currentLogReference = initialFileState.item.storageReference
-        currentLogDateKey = initialFileState.dateKey
-        writerJob = job
-        return initialFileState.item
-    }
-
-    fun enqueueSample(sample: LoggedSample): Boolean {
-        if (writeFailureMessage != null) {
-            return false
-        }
-        return writerChannel?.trySend(sample)?.isSuccess == true
-    }
-
-    fun consumeWriteFailureMessage(): String? {
-        val message = writeFailureMessage
-        writeFailureMessage = null
-        return message
-    }
-
-    suspend fun stopLog(): LogFileItem? = withContext(Dispatchers.IO) {
-        val channel = writerChannel
-        val activeWriter = writer
-        val item = currentLogItem
-
-        writerChannel = null
-        currentLogItem = null
-        currentLogReference = null
-
-        channel?.close()
-        writerJob?.join()
-        writerJob = null
-
-        if (writeFailureMessage != null) {
-            try {
-                activeWriter?.close()
-            } finally {
-                writer = null
-            }
-            publishLogItem(item)
-            return@withContext item
-        }
-
-        try {
-            activeWriter?.flush()
-            activeWriter?.close()
-        } finally {
-            writer = null
-        }
-
-        publishLogItem(item)
-        item
-    }
 
     fun latestLog(): LogFileItem? = listLogs().firstOrNull()
 
@@ -149,10 +49,6 @@ class LogFileManager(private val context: Context) {
     }
 
     fun deleteLog(storageReference: String): Boolean {
-        if (storageReference == currentLogReference) {
-            return false
-        }
-
         val uri = Uri.parse(storageReference)
         return if (uri.scheme == "content") {
             context.contentResolver.delete(uri, null, null) > 0
@@ -169,17 +65,77 @@ class LogFileManager(private val context: Context) {
         return Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
     }
 
-    private fun openLogFile(timestampMs: Long): LogFileState {
+    private fun appendSamplesToDailyLog(timestampMs: Long, samples: List<LoggedSample>): LogFileItem {
         return if (usesMediaStoreStorage()) {
-            openMediaStoreLog(timestampMs)
+            appendMediaStoreLog(timestampMs, samples)
         } else {
-            openLegacyLog(timestampMs)
+            appendLegacyLog(timestampMs, samples)
         }
     }
 
-    private fun openMediaStoreLog(timestampMs: Long): LogFileState {
-        val fileName = "accelerometer_log_${timestampForFile(timestampMs)}.csv"
+    private fun appendMediaStoreLog(timestampMs: Long, samples: List<LoggedSample>): LogFileItem {
+        val fileName = dailyFileName(timestampMs)
         val relativePath = "${Environment.DIRECTORY_DOWNLOADS}/AccelLogger/"
+        val existingItem = findMediaStoreLog(fileName, relativePath)
+        val uri = existingItem?.let { Uri.parse(it.storageReference) }
+            ?: createMediaStoreLog(fileName, relativePath, timestampMs)
+        val outputStream = context.contentResolver.openOutputStream(
+            uri,
+            if (existingItem == null) "w" else "wa",
+        )
+            ?: throw IllegalStateException(context.getString(R.string.storage_unavailable_error))
+
+        bufferedWriter(outputStream).use { writer ->
+            writeHeaderIfNeeded(writer, existingItem?.sizeBytes ?: 0L)
+            samples.forEach { writer.write(it.toCsvRow()) }
+            writer.flush()
+        }
+
+        val fallbackItem = LogFileItem(
+            fileName = fileName,
+            storageReference = uri.toString(),
+            sizeBytes = existingItem?.sizeBytes ?: 0L,
+            modifiedTimeMs = System.currentTimeMillis(),
+        )
+        publishLogItem(fallbackItem)
+        return queryMediaStoreLog(uri) ?: fallbackItem
+    }
+
+    @Suppress("DEPRECATION")
+    private fun appendLegacyLog(timestampMs: Long, samples: List<LoggedSample>): LogFileItem {
+        val directory = context.getExternalFilesDir(null)
+            ?: throw IllegalStateException(context.getString(R.string.storage_unavailable_error))
+        if (!directory.exists() && !directory.mkdirs()) {
+            throw IllegalStateException(context.getString(R.string.storage_unavailable_error))
+        }
+
+        val file = File(directory, dailyFileName(timestampMs))
+        val existingSizeBytes = if (file.exists()) file.length() else 0L
+
+        FileOutputStream(file, true).use { outputStream ->
+            bufferedWriter(outputStream).use { writer ->
+                writeHeaderIfNeeded(writer, existingSizeBytes)
+                samples.forEach { writer.write(it.toCsvRow()) }
+                writer.flush()
+            }
+        }
+
+        return LogFileItem(
+            fileName = file.name,
+            storageReference = file.absolutePath,
+            sizeBytes = file.length(),
+            modifiedTimeMs = file.lastModified(),
+        )
+    }
+
+    private fun writeHeaderIfNeeded(writer: BufferedWriter, existingSizeBytes: Long) {
+        if (existingSizeBytes == 0L) {
+            writer.write(CSV_HEADER)
+            writer.newLine()
+        }
+    }
+
+    private fun createMediaStoreLog(fileName: String, relativePath: String, timestampMs: Long): Uri {
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
             put(MediaStore.MediaColumns.MIME_TYPE, "text/csv")
@@ -187,50 +143,83 @@ class LogFileManager(private val context: Context) {
             put(MediaStore.MediaColumns.DATE_MODIFIED, timestampMs / 1000L)
         }
 
-        val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+        return context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
             ?: throw IllegalStateException(context.getString(R.string.storage_unavailable_error))
-        val outputStream = context.contentResolver.openOutputStream(uri, "w")
-            ?: throw IllegalStateException(context.getString(R.string.storage_unavailable_error))
-        val writer = bufferedWriter(outputStream)
-        writer.write(CSV_HEADER)
-        writer.newLine()
-
-        return LogFileState(
-            item = LogFileItem(
-                fileName = fileName,
-                storageReference = uri.toString(),
-                sizeBytes = 0L,
-                modifiedTimeMs = timestampMs,
-            ),
-            writer = writer,
-            dateKey = dayKeyFor(timestampMs),
-        )
     }
 
-    @Suppress("DEPRECATION")
-    private fun openLegacyLog(timestampMs: Long): LogFileState {
-        val directory = context.getExternalFilesDir(null)
-            ?: throw IllegalStateException(context.getString(R.string.storage_unavailable_error))
-        if (!directory.exists() && !directory.mkdirs()) {
-            throw IllegalStateException(context.getString(R.string.storage_unavailable_error))
-        }
-
-        val file = File(directory, "accelerometer_log_${timestampForFile(timestampMs)}.csv")
-        val outputStream = FileOutputStream(file, false)
-        val writer = bufferedWriter(outputStream)
-        writer.write(CSV_HEADER)
-        writer.newLine()
-
-        return LogFileState(
-            item = LogFileItem(
-                fileName = file.name,
-                storageReference = file.absolutePath,
-                sizeBytes = file.length(),
-                modifiedTimeMs = file.lastModified(),
-            ),
-            writer = writer,
-            dateKey = dayKeyFor(timestampMs),
+    private fun findMediaStoreLog(fileName: String, relativePath: String): LogFileItem? {
+        val projection = arrayOf(
+            MediaStore.MediaColumns._ID,
+            MediaStore.MediaColumns.DISPLAY_NAME,
+            MediaStore.MediaColumns.SIZE,
+            MediaStore.MediaColumns.DATE_MODIFIED,
         )
+        val selection =
+            "${MediaStore.MediaColumns.DISPLAY_NAME} = ? AND ${MediaStore.MediaColumns.RELATIVE_PATH} = ?"
+        val selectionArgs = arrayOf(fileName, relativePath)
+        val sortOrder = "${MediaStore.MediaColumns.DATE_MODIFIED} DESC"
+
+        return context.contentResolver.query(
+            MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+            projection,
+            selection,
+            selectionArgs,
+            sortOrder,
+        )?.use { cursor ->
+            if (!cursor.moveToFirst()) {
+                return@use null
+            }
+
+            val id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID))
+            val name = cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME))
+                ?: return@use null
+            val sizeBytes = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE))
+            val modifiedTimeMs =
+                cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_MODIFIED)) * 1000L
+
+            LogFileItem(
+                fileName = name,
+                storageReference = Uri.withAppendedPath(
+                    MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                    id.toString(),
+                ).toString(),
+                sizeBytes = sizeBytes,
+                modifiedTimeMs = modifiedTimeMs,
+            )
+        }
+    }
+
+    private fun queryMediaStoreLog(uri: Uri): LogFileItem? {
+        val projection = arrayOf(
+            MediaStore.MediaColumns.DISPLAY_NAME,
+            MediaStore.MediaColumns.SIZE,
+            MediaStore.MediaColumns.DATE_MODIFIED,
+        )
+
+        return context.contentResolver.query(
+            uri,
+            projection,
+            null,
+            null,
+            null,
+        )?.use { cursor ->
+            if (!cursor.moveToFirst()) {
+                return@use null
+            }
+
+            val fileName = cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME))
+                ?: return@use null
+            val sizeBytes = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE))
+            val modifiedTimeMs =
+                cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_MODIFIED)) * 1000L
+
+            LogFileItem(
+                fileName = fileName,
+                storageReference = uri.toString(),
+                sizeBytes = sizeBytes,
+                modifiedTimeMs = modifiedTimeMs,
+            )
+        }
     }
 
     private fun listMediaStoreLogs(): List<LogFileItem> {
@@ -323,9 +312,8 @@ class LogFileManager(private val context: Context) {
         private const val CSV_HEADER =
             "sample_index,elapsed_ms,event_timestamp_ns,system_time_ms,x_mps2,y_mps2,z_mps2,accuracy"
 
-        private fun timestampForFile(timestampMs: Long = System.currentTimeMillis()): String {
-            val formatter = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss_SSS", Locale.US)
-            return formatter.format(Date(timestampMs))
+        private fun dailyFileName(timestampMs: Long): String {
+            return "accelerometer_log_${dayKeyFor(timestampMs)}.csv"
         }
 
         private fun dayKeyFor(timestampMs: Long): String {
@@ -334,11 +322,5 @@ class LogFileManager(private val context: Context) {
                 .toLocalDate()
                 .toString()
         }
-
-        private data class LogFileState(
-            val item: LogFileItem,
-            val writer: BufferedWriter,
-            val dateKey: String,
-        )
     }
 }

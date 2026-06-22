@@ -25,6 +25,9 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.withContext
+import kotlin.math.ceil
 
 class LoggingService : Service() {
 
@@ -36,6 +39,16 @@ class LoggingService : Service() {
     private var loggingStartedElapsedRealtimeMs = 0L
     private var loggingStartedSensorTimestampNs: Long? = null
     private var elapsedJob: Job? = null
+    private var eventWriterChannel: Channel<List<LoggedSample>>? = null
+    private var eventWriterJob: Job? = null
+    private val preEventSamples = ArrayDeque<LoggedSample>()
+    private val activeEventSamples = mutableListOf<LoggedSample>()
+    private var preEventSampleCapacity = 0
+    private var postEventSampleCount = 0
+    private var postEventSamplesRemaining = 0
+    private var lastSavedFileInSession: LogFileItem? = null
+    @Volatile
+    private var writeFailureMessage: String? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -75,6 +88,8 @@ class LoggingService : Service() {
     override fun onDestroy() {
         accelerometerLogger.stop()
         elapsedJob?.cancel()
+        eventWriterChannel?.close()
+        eventWriterJob?.cancel()
         serviceScope.coroutineContext.cancel()
         super.onDestroy()
     }
@@ -100,18 +115,19 @@ class LoggingService : Service() {
             return
         }
 
-        val startedFile = try {
-            logFileManager.startNewLog()
-        } catch (exception: Exception) {
-            emitEvent(MainUiEvent.Error(exception.message ?: getString(R.string.file_create_error)))
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
-            return
-        }
+        val previousState = _state.value
 
         sampleCount = 0L
         loggingStartedElapsedRealtimeMs = SystemClock.elapsedRealtime()
         loggingStartedSensorTimestampNs = null
+        preEventSampleCapacity = samplesForEventWindow(sampleRateHz)
+        postEventSampleCount = samplesForEventWindow(sampleRateHz)
+        postEventSamplesRemaining = 0
+        preEventSamples.clear()
+        activeEventSamples.clear()
+        lastSavedFileInSession = null
+        writeFailureMessage = null
+        startEventWriter()
         elapsedJob?.cancel()
         elapsedJob = serviceScope.launch {
             while (true) {
@@ -132,8 +148,8 @@ class LoggingService : Service() {
             sampleCount = 0L,
             elapsedMs = 0L,
             sampleRateHz = sampleRateHz,
-            lastSavedFileName = startedFile.fileName,
-            lastSavedStorageReference = startedFile.storageReference,
+            lastSavedFileName = previousState.lastSavedFileName,
+            lastSavedStorageReference = previousState.lastSavedStorageReference,
         )
 
         accelerometerLogger.startLogging(sampleRateHz)
@@ -141,7 +157,7 @@ class LoggingService : Service() {
     }
 
     private fun onSampleReceived(sample: AccelSample) {
-        if (!_state.value.isLogging) {
+        if (!_state.value.isLogging || writeFailureMessage != null) {
             return
         }
 
@@ -161,15 +177,102 @@ class LoggingService : Service() {
             accuracy = sample.accuracy,
         )
 
-        if (!logFileManager.enqueueSample(loggedSample)) {
+        captureEventWindow(
+            loggedSample = loggedSample,
+            thresholdExceeded = sample.magnitude >= EVENT_TRIGGER_MAGNITUDE_THRESHOLD_MPS2,
+        )
+    }
+
+    private fun captureEventWindow(loggedSample: LoggedSample, thresholdExceeded: Boolean) {
+        if (activeEventSamples.isNotEmpty()) {
+            activeEventSamples.add(loggedSample)
+            postEventSamplesRemaining = if (thresholdExceeded) {
+                postEventSampleCount
+            } else {
+                postEventSamplesRemaining - 1
+            }
+            if (postEventSamplesRemaining <= 0) {
+                flushActiveEventWindow(stopOnFailure = true)
+            }
+        } else if (thresholdExceeded) {
+            if (preEventSamples.isNotEmpty()) {
+                activeEventSamples.addAll(preEventSamples)
+            }
+            activeEventSamples.add(loggedSample)
+            postEventSamplesRemaining = postEventSampleCount
+        }
+
+        preEventSamples.addLast(loggedSample)
+        while (preEventSamples.size > preEventSampleCapacity) {
+            preEventSamples.removeFirst()
+        }
+    }
+
+    private fun flushActiveEventWindow(stopOnFailure: Boolean): Boolean {
+        if (activeEventSamples.isEmpty()) {
+            return true
+        }
+
+        val eventSamples = activeEventSamples.toList()
+        activeEventSamples.clear()
+        postEventSamplesRemaining = 0
+
+        val enqueued = enqueueEventWindow(eventSamples)
+        if (!enqueued && stopOnFailure) {
             serviceScope.launch {
                 emitEvent(
                     MainUiEvent.Error(
-                        logFileManager.consumeWriteFailureMessage()
-                            ?: getString(R.string.file_write_error),
+                        writeFailureMessage ?: getString(R.string.file_write_error),
                     ),
                 )
-                stopLogging(emitSavedMessage = false)
+                stopLoggingInternal(emitSavedMessage = false)
+            }
+        }
+
+        return enqueued
+    }
+
+    private fun enqueueEventWindow(eventSamples: List<LoggedSample>): Boolean {
+        if (writeFailureMessage != null) {
+            return false
+        }
+
+        val sendResult = eventWriterChannel?.trySend(eventSamples)
+        if (sendResult?.isSuccess == true) {
+            return true
+        }
+
+        writeFailureMessage = writeFailureMessage ?: getString(R.string.file_write_error)
+        return false
+    }
+
+    private fun startEventWriter() {
+        val channel = Channel<List<LoggedSample>>(capacity = EVENT_WRITE_CHANNEL_CAPACITY)
+        eventWriterChannel = channel
+        eventWriterJob = serviceScope.launch(Dispatchers.IO) {
+            try {
+                for (eventSamples in channel) {
+                    val savedFile = logFileManager.appendEventSamples(eventSamples) ?: continue
+                    withContext(Dispatchers.Main.immediate) {
+                        lastSavedFileInSession = savedFile
+                        _state.update {
+                            it.copy(
+                                lastSavedFileName = savedFile.fileName,
+                                lastSavedStorageReference = savedFile.storageReference,
+                            )
+                        }
+                    }
+                }
+            } catch (exception: Exception) {
+                writeFailureMessage = exception.message ?: getString(R.string.file_write_error)
+                serviceScope.launch {
+                    emitEvent(
+                        MainUiEvent.Error(
+                            writeFailureMessage ?: getString(R.string.file_write_error),
+                        ),
+                    )
+                    stopLoggingInternal(emitSavedMessage = false)
+                }
             }
         }
     }
@@ -187,7 +290,7 @@ class LoggingService : Service() {
         emitEvent(MainUiEvent.Error(message))
         if (_state.value.isLogging) {
             serviceScope.launch {
-                stopLogging(emitSavedMessage = false)
+                stopLoggingInternal(emitSavedMessage = false)
             }
         }
     }
@@ -209,12 +312,27 @@ class LoggingService : Service() {
         elapsedJob?.cancel()
         elapsedJob = null
 
-        val stoppedFile = try {
-            logFileManager.stopLog()
-        } catch (exception: Exception) {
-            emitEvent(MainUiEvent.Error(exception.message ?: getString(R.string.file_close_error)))
-            null
+        if (writeFailureMessage == null) {
+            flushActiveEventWindow(stopOnFailure = false)
+        } else {
+            activeEventSamples.clear()
+            postEventSamplesRemaining = 0
         }
+
+        val channel = eventWriterChannel
+        eventWriterChannel = null
+        channel?.close()
+        val writerJob = eventWriterJob
+        eventWriterJob = null
+        writerJob?.join()
+
+        val finalWriteFailureMessage = writeFailureMessage
+        val shouldEmitSavedMessage = emitSavedMessage && finalWriteFailureMessage == null
+        if (finalWriteFailureMessage != null && emitSavedMessage) {
+            emitEvent(MainUiEvent.Error(finalWriteFailureMessage))
+        }
+
+        val stoppedFile = lastSavedFileInSession
 
         val finalElapsedMs = if (loggingStartedElapsedRealtimeMs == 0L) {
             _state.value.elapsedMs
@@ -234,8 +352,15 @@ class LoggingService : Service() {
 
         loggingStartedElapsedRealtimeMs = 0L
         loggingStartedSensorTimestampNs = null
+        preEventSamples.clear()
+        activeEventSamples.clear()
+        preEventSampleCapacity = 0
+        postEventSampleCount = 0
+        postEventSamplesRemaining = 0
+        lastSavedFileInSession = null
+        writeFailureMessage = null
 
-        if (stoppedFile != null && emitSavedMessage) {
+        if (stoppedFile != null && shouldEmitSavedMessage) {
             emitEvent(MainUiEvent.Info(getString(R.string.saved_file_message, stoppedFile.fileName)))
         }
 
@@ -282,6 +407,10 @@ class LoggingService : Service() {
         private const val EXTRA_SAMPLE_RATE_HZ = "com.example.accellogger.extra.SAMPLE_RATE_HZ"
         private const val NOTIFICATION_CHANNEL_ID = "accel_logger_background_logging"
         private const val NOTIFICATION_ID = 1001
+        private const val EVENT_WRITE_CHANNEL_CAPACITY = 16
+        private const val EVENT_CONTEXT_WINDOW_MS = 500L
+        private const val EVENT_CONTEXT_MAX_SAMPLES = 25
+        private const val EVENT_TRIGGER_MAGNITUDE_THRESHOLD_MPS2 = 6.0
 
         private val _state = MutableStateFlow(LoggingServiceState())
         val state: StateFlow<LoggingServiceState> = _state.asStateFlow()
@@ -300,6 +429,12 @@ class LoggingService : Service() {
             return Intent(context, LoggingService::class.java).apply {
                 action = ACTION_STOP_LOGGING
             }
+        }
+
+        private fun samplesForEventWindow(sampleRateHz: Int): Int {
+            return ceil(sampleRateHz.toDouble() * EVENT_CONTEXT_WINDOW_MS.toDouble() / 1000.0)
+                .toInt()
+                .coerceIn(1, EVENT_CONTEXT_MAX_SAMPLES)
         }
     }
 }
