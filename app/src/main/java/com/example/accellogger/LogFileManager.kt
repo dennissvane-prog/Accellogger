@@ -309,11 +309,12 @@ class LogFileManager(private val context: Context) {
     }
 
     companion object {
+        private const val LOG_FILE_FORMAT_VERSION_SUFFIX = "_v2"
         private const val CSV_HEADER =
-            "sample_index,elapsed_ms,event_timestamp_ns,system_time_ms,utc_timestamp,x_mps2,y_mps2,z_mps2,magnitude_mps2,accuracy"
+            "utc_timestamp,sample_index,elapsed_ms,event_timestamp_ns,system_time_ms,x_mps2,y_mps2,z_mps2,magnitude_mps2,accuracy"
 
         private fun dailyFileName(timestampMs: Long): String {
-            return "accelerometer_log_${dayKeyFor(timestampMs)}.csv"
+            return "accelerometer_log_${dayKeyFor(timestampMs)}${LOG_FILE_FORMAT_VERSION_SUFFIX}.csv"
         }
 
         private fun dayKeyFor(timestampMs: Long): String {

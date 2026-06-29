@@ -80,6 +80,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun setEventTriggerThresholdG(eventTriggerThresholdG: Double) {
+        if (eventTriggerThresholdG <= 0.0) {
+            return
+        }
+
+        _uiState.update { it.copy(eventTriggerThresholdG = eventTriggerThresholdG) }
+    }
+
+    fun setEventWindowMs(eventWindowMs: Int) {
+        if (eventWindowMs <= 0) {
+            return
+        }
+
+        _uiState.update { it.copy(eventWindowMs = eventWindowMs) }
+    }
+
     fun startLogging() {
         val state = _uiState.value
         if (!state.sensorAvailable) {
@@ -93,7 +109,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         accelerometerLogger.stop()
         ContextCompat.startForegroundService(
             appContext,
-            LoggingService.startIntent(appContext, state.sampleRateHz),
+            LoggingService.startIntent(
+                appContext,
+                state.sampleRateHz,
+                state.eventTriggerThresholdG,
+                state.eventWindowMs,
+            ),
         )
     }
 
@@ -138,6 +159,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     it.elapsedMs
                 },
                 sampleCount = state.sampleCount,
+                sampleRateHz = state.sampleRateHz,
+                eventTriggerThresholdG = state.eventTriggerThresholdG,
+                eventWindowMs = state.eventWindowMs,
                 statusText = when {
                     state.isLogging -> appContext.getString(R.string.status_logging)
                     !it.sensorAvailable -> appContext.getString(R.string.sensor_unavailable)

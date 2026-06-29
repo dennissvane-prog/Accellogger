@@ -46,6 +46,7 @@ class LoggingService : Service() {
     private var preEventSampleCapacity = 0
     private var postEventSampleCount = 0
     private var postEventSamplesRemaining = 0
+    private var eventTriggerThresholdMps2 = DEFAULT_EVENT_TRIGGER_THRESHOLD_MPS2
     private var lastSavedFileInSession: LogFileItem? = null
     @Volatile
     private var writeFailureMessage: String? = null
@@ -66,6 +67,14 @@ class LoggingService : Service() {
         when (intent?.action) {
             ACTION_START_LOGGING -> {
                 val sampleRateHz = intent.getIntExtra(EXTRA_SAMPLE_RATE_HZ, 0)
+                val eventTriggerThresholdG = intent.getDoubleExtra(
+                    EXTRA_EVENT_TRIGGER_THRESHOLD_G,
+                    DEFAULT_EVENT_TRIGGER_THRESHOLD_G,
+                )
+                val eventWindowMs = intent.getIntExtra(
+                    EXTRA_EVENT_WINDOW_MS,
+                    DEFAULT_EVENT_WINDOW_MS,
+                )
                 val notification = buildNotification(_state.value.sampleCount)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     startForeground(
@@ -76,7 +85,7 @@ class LoggingService : Service() {
                 } else {
                     startForeground(NOTIFICATION_ID, notification)
                 }
-                startLogging(sampleRateHz)
+                startLogging(sampleRateHz, eventTriggerThresholdG, eventWindowMs)
             }
 
             ACTION_STOP_LOGGING -> stopLogging()
@@ -96,7 +105,7 @@ class LoggingService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private fun startLogging(sampleRateHz: Int) {
+    private fun startLogging(sampleRateHz: Int, eventTriggerThresholdG: Double, eventWindowMs: Int) {
         if (_state.value.isLogging) {
             return
         }
@@ -115,13 +124,28 @@ class LoggingService : Service() {
             return
         }
 
+        if (eventTriggerThresholdG <= 0.0) {
+            emitEvent(MainUiEvent.Error(getString(R.string.event_threshold_error)))
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
+        if (eventWindowMs <= 0) {
+            emitEvent(MainUiEvent.Error(getString(R.string.event_window_error)))
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
         val previousState = _state.value
 
         sampleCount = 0L
         loggingStartedElapsedRealtimeMs = SystemClock.elapsedRealtime()
         loggingStartedSensorTimestampNs = null
-        preEventSampleCapacity = samplesForEventWindow(sampleRateHz)
-        postEventSampleCount = samplesForEventWindow(sampleRateHz)
+        eventTriggerThresholdMps2 = eventTriggerThresholdG * METERS_PER_SECOND_SQUARED_PER_G
+        preEventSampleCapacity = samplesForEventWindow(sampleRateHz, eventWindowMs)
+        postEventSampleCount = samplesForEventWindow(sampleRateHz, eventWindowMs)
         postEventSamplesRemaining = 0
         preEventSamples.clear()
         activeEventSamples.clear()
@@ -148,6 +172,8 @@ class LoggingService : Service() {
             sampleCount = 0L,
             elapsedMs = 0L,
             sampleRateHz = sampleRateHz,
+            eventTriggerThresholdG = eventTriggerThresholdG,
+            eventWindowMs = eventWindowMs,
             lastSavedFileName = previousState.lastSavedFileName,
             lastSavedStorageReference = previousState.lastSavedStorageReference,
         )
@@ -179,7 +205,7 @@ class LoggingService : Service() {
 
         captureEventWindow(
             loggedSample = loggedSample,
-            thresholdExceeded = sample.magnitude >= EVENT_TRIGGER_MAGNITUDE_THRESHOLD_MPS2,
+            thresholdExceeded = sample.magnitude >= eventTriggerThresholdMps2,
         )
     }
 
@@ -346,6 +372,8 @@ class LoggingService : Service() {
             sampleCount = sampleCount,
             elapsedMs = finalElapsedMs,
             sampleRateHz = _state.value.sampleRateHz,
+            eventTriggerThresholdG = _state.value.eventTriggerThresholdG,
+            eventWindowMs = _state.value.eventWindowMs,
             lastSavedFileName = stoppedFile?.fileName ?: _state.value.lastSavedFileName,
             lastSavedStorageReference = stoppedFile?.storageReference ?: _state.value.lastSavedStorageReference,
         )
@@ -405,12 +433,11 @@ class LoggingService : Service() {
         private const val ACTION_START_LOGGING = "com.example.accellogger.action.START_LOGGING"
         private const val ACTION_STOP_LOGGING = "com.example.accellogger.action.STOP_LOGGING"
         private const val EXTRA_SAMPLE_RATE_HZ = "com.example.accellogger.extra.SAMPLE_RATE_HZ"
+        private const val EXTRA_EVENT_TRIGGER_THRESHOLD_G = "com.example.accellogger.extra.EVENT_TRIGGER_THRESHOLD_G"
+        private const val EXTRA_EVENT_WINDOW_MS = "com.example.accellogger.extra.EVENT_WINDOW_MS"
         private const val NOTIFICATION_CHANNEL_ID = "accel_logger_background_logging"
         private const val NOTIFICATION_ID = 1001
         private const val EVENT_WRITE_CHANNEL_CAPACITY = 16
-        private const val EVENT_CONTEXT_WINDOW_MS = 500L
-        private const val EVENT_CONTEXT_MAX_SAMPLES = 25
-        private const val EVENT_TRIGGER_MAGNITUDE_THRESHOLD_MPS2 = 6.0
 
         private val _state = MutableStateFlow(LoggingServiceState())
         val state: StateFlow<LoggingServiceState> = _state.asStateFlow()
@@ -418,10 +445,17 @@ class LoggingService : Service() {
         private val _events = MutableSharedFlow<MainUiEvent>(extraBufferCapacity = 4)
         val events: SharedFlow<MainUiEvent> = _events.asSharedFlow()
 
-        fun startIntent(context: Context, sampleRateHz: Int): Intent {
+        fun startIntent(
+            context: Context,
+            sampleRateHz: Int,
+            eventTriggerThresholdG: Double,
+            eventWindowMs: Int,
+        ): Intent {
             return Intent(context, LoggingService::class.java).apply {
                 action = ACTION_START_LOGGING
                 putExtra(EXTRA_SAMPLE_RATE_HZ, sampleRateHz)
+                putExtra(EXTRA_EVENT_TRIGGER_THRESHOLD_G, eventTriggerThresholdG)
+                putExtra(EXTRA_EVENT_WINDOW_MS, eventWindowMs)
             }
         }
 
@@ -431,10 +465,10 @@ class LoggingService : Service() {
             }
         }
 
-        private fun samplesForEventWindow(sampleRateHz: Int): Int {
-            return ceil(sampleRateHz.toDouble() * EVENT_CONTEXT_WINDOW_MS.toDouble() / 1000.0)
+        private fun samplesForEventWindow(sampleRateHz: Int, eventWindowMs: Int): Int {
+            return ceil(sampleRateHz.toDouble() * eventWindowMs.toDouble() / 1000.0)
                 .toInt()
-                .coerceIn(1, EVENT_CONTEXT_MAX_SAMPLES)
+                .coerceAtLeast(1)
         }
     }
 }

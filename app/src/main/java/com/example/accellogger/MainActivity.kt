@@ -5,6 +5,7 @@ import android.os.Bundle
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.style.RelativeSizeSpan
+import android.widget.EditText
 import android.widget.Toast
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
@@ -15,6 +16,7 @@ import androidx.core.widget.doAfterTextChanged
 import com.example.accellogger.databinding.ActivityMainBinding
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import kotlinx.coroutines.launch
+import java.text.NumberFormat
 import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity() {
@@ -33,6 +35,20 @@ class MainActivity : AppCompatActivity() {
             val sampleRateHz = text?.toString()?.toIntOrNull()
             if (sampleRateHz != null) {
                 viewModel.setSampleRateHz(sampleRateHz)
+            }
+        }
+        binding.thresholdInput.setText(formatThresholdG(viewModel.uiState.value.eventTriggerThresholdG))
+        binding.thresholdInput.doAfterTextChanged { text ->
+            val eventTriggerThresholdG = parseThresholdInput(text)
+            if (eventTriggerThresholdG != null) {
+                viewModel.setEventTriggerThresholdG(eventTriggerThresholdG)
+            }
+        }
+        binding.eventWindowInput.setText(viewModel.uiState.value.eventWindowMs.toString())
+        binding.eventWindowInput.doAfterTextChanged { text ->
+            val eventWindowMs = text?.toString()?.toIntOrNull()
+            if (eventWindowMs != null) {
+                viewModel.setEventWindowMs(eventWindowMs)
             }
         }
 
@@ -111,6 +127,9 @@ class MainActivity : AppCompatActivity() {
             formatElapsed(state.elapsedMs),
         )
         binding.samplesText.text = getString(R.string.samples_label, state.sampleCount)
+        syncInputValue(binding.sampleRateInput, state.sampleRateHz.toString())
+        syncInputValue(binding.thresholdInput, formatThresholdG(state.eventTriggerThresholdG))
+        syncInputValue(binding.eventWindowInput, state.eventWindowMs.toString())
 
         binding.startStopButton.isEnabled = state.sensorAvailable
         binding.startStopButton.text = if (state.isLogging) {
@@ -118,6 +137,9 @@ class MainActivity : AppCompatActivity() {
         } else {
             getString(R.string.start_logging)
         }
+        binding.sampleRateInput.isEnabled = state.sensorAvailable && !state.isLogging
+        binding.thresholdInput.isEnabled = state.sensorAvailable && !state.isLogging
+        binding.eventWindowInput.isEnabled = state.sensorAvailable && !state.isLogging
 
         val hasLastLog = !state.lastSavedStorageReference.isNullOrBlank()
         binding.shareLastLogButton.isEnabled = hasLastLog
@@ -162,6 +184,32 @@ class MainActivity : AppCompatActivity() {
         val minutes = TimeUnit.MILLISECONDS.toMinutes(elapsedMs) % 60
         val seconds = TimeUnit.MILLISECONDS.toSeconds(elapsedMs) % 60
         return String.format("%02d:%02d:%02d", hours, minutes, seconds)
+    }
+
+    private fun parseThresholdInput(text: CharSequence?): Double? {
+        return text
+            ?.toString()
+            ?.trim()
+            ?.replace(',', '.')
+            ?.toDoubleOrNull()
+    }
+
+    private fun formatThresholdG(value: Double): String {
+        return NumberFormat.getNumberInstance().apply {
+            maximumFractionDigits = 2
+            minimumFractionDigits = 0
+            isGroupingUsed = false
+        }.format(value)
+    }
+
+    private fun syncInputValue(editText: EditText, value: String) {
+        if (editText.hasFocus()) {
+            return
+        }
+        if (editText.text?.toString() == value) {
+            return
+        }
+        editText.setText(value)
     }
 
     private fun buildTitleText(): CharSequence {
