@@ -26,14 +26,24 @@ class LogSyncWorker(
 
         val accessToken = try {
             fetchAccessToken(accountEmail)
-        } catch (_: IOException) {
-            return@withContext Result.retry()
         } catch (_: Exception) {
-            return@withContext Result.failure()
+            // Covers both transient IOExceptions and Google auth errors (e.g. a
+            // consent/token issue). Retrying is safe here: previously a non-IOException
+            // permanently failed the work, so a one-time consent hiccup could look like
+            // sync being stuck forever with no files ever sent.
+            return@withContext Result.retry()
         }
 
         val client = DriveRestClient(accessToken)
-        val folderId = client.ensureFolder(config.folderId) ?: return@withContext Result.retry()
+        val folderId = try {
+            client.ensureFolder(config.folderId)
+        } catch (_: Exception) {
+            // A lookup/network failure must NOT fall through to creating a new folder -
+            // that previously produced duplicate "AccelLogger" folders in Drive every
+            // time a request hiccupped, which is why files appeared to fork into
+            // separate copies instead of updating in place.
+            return@withContext Result.retry()
+        }
         if (folderId != config.folderId) {
             autoSyncPreferences.saveFolderId(folderId)
         }
@@ -50,11 +60,19 @@ class LogSyncWorker(
                 return@forEach
             }
 
-            val existingFileId = client.findFile(logItem.fileName, folderId)
-            val succeeded = if (existingFileId != null) {
-                client.updateFileContent(existingFileId, CSV_MIME_TYPE, content)
-            } else {
-                client.uploadNewFile(logItem.fileName, folderId, CSV_MIME_TYPE, content) != null
+            val succeeded = try {
+                val existingFileId = client.findFile(logItem.fileName, folderId)
+                if (existingFileId != null) {
+                    client.updateFileContent(existingFileId, CSV_MIME_TYPE, content)
+                } else {
+                    client.uploadNewFile(logItem.fileName, folderId, CSV_MIME_TYPE, content)
+                }
+                true
+            } catch (_: Exception) {
+                // A failed lookup must not be mistaken for "file doesn't exist yet" -
+                // that previously caused a brand new duplicate file to be uploaded on
+                // every hiccup instead of updating the existing daily file in place.
+                false
             }
 
             if (succeeded) {

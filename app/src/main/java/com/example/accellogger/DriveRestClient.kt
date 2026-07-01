@@ -3,6 +3,7 @@ package com.example.accellogger
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
@@ -11,97 +12,99 @@ import java.net.URLEncoder
  * Minimal Google Drive v3 REST client using plain HttpURLConnection so no extra HTTP
  * dependency is needed beyond the org.json classes already bundled with Android.
  * Only creates/updates files inside a single app-owned folder (drive.file scope).
+ *
+ * All request helpers throw [IOException] on non-2xx responses or network failures
+ * instead of silently returning null/false. Treating a transient/auth error as "not
+ * found" previously caused callers to create brand new duplicate folders/files on
+ * every hiccup instead of retrying, which is why users saw runaway " (1)", " (2)"
+ * style duplicates instead of a single file being updated in place.
  */
 class DriveRestClient(private val accessToken: String) {
 
-    fun ensureFolder(cachedFolderId: String?): String? {
+    fun ensureFolder(cachedFolderId: String?): String {
         if (cachedFolderId != null && folderExists(cachedFolderId)) {
             return cachedFolderId
         }
 
-        findFolderId()?.let { return it }
-        return createFolder()
+        return findFolderId() ?: createFolder()
     }
 
     fun findFile(fileName: String, parentId: String): String? {
         val query = "name='${escapeQueryValue(fileName)}' and '$parentId' in parents and trashed=false"
-        val url = "$FILES_ENDPOINT?q=${encode(query)}&fields=files(id,name)&spaces=drive"
+        val url = "$FILES_ENDPOINT?q=${encode(query)}&fields=files(id,name)&spaces=drive&orderBy=createdTime"
 
-        return runCatching {
-            val connection = openConnection(url, "GET")
-            if (connection.responseCode != HttpURLConnection.HTTP_OK) return@runCatching null
-            val files = JSONObject(readBody(connection)).optJSONArray("files") ?: return@runCatching null
-            if (files.length() == 0) null else files.getJSONObject(0).getString("id")
-        }.getOrNull()
+        val connection = openConnection(url, "GET")
+        val files = JSONObject(requireSuccessBody(connection)).optJSONArray("files")
+        return if (files == null || files.length() == 0) null else files.getJSONObject(0).getString("id")
     }
 
-    fun uploadNewFile(fileName: String, parentId: String, mimeType: String, content: ByteArray): String? {
-        return runCatching {
-            val boundary = "accellogger-${System.currentTimeMillis()}"
-            val connection = openConnection("$UPLOAD_ENDPOINT?uploadType=multipart", "POST")
-            connection.setRequestProperty("Content-Type", "multipart/related; boundary=$boundary")
-            connection.doOutput = true
+    fun uploadNewFile(fileName: String, parentId: String, mimeType: String, content: ByteArray): String {
+        val boundary = "accellogger-${System.currentTimeMillis()}"
+        val connection = openConnection("$UPLOAD_ENDPOINT?uploadType=multipart", "POST")
+        connection.setRequestProperty("Content-Type", "multipart/related; boundary=$boundary")
+        connection.doOutput = true
 
-            val metadata = JSONObject().apply {
-                put("name", fileName)
-                put("parents", JSONArray().put(parentId))
-            }
+        val metadata = JSONObject().apply {
+            put("name", fileName)
+            put("parents", JSONArray().put(parentId))
+        }
 
-            connection.outputStream.use { it.write(buildMultipartBody(boundary, metadata, mimeType, content)) }
-            if (connection.responseCode !in 200..299) return@runCatching null
-            JSONObject(readBody(connection)).getString("id")
-        }.getOrNull()
+        connection.outputStream.use { it.write(buildMultipartBody(boundary, metadata, mimeType, content)) }
+        return JSONObject(requireSuccessBody(connection)).getString("id")
     }
 
-    fun updateFileContent(fileId: String, mimeType: String, content: ByteArray): Boolean {
-        return runCatching {
-            // Android's HttpURLConnection rejects the literal PATCH verb, so use the
-            // method-override header that the Google APIs explicitly support instead.
-            val connection = openConnection("$UPLOAD_ENDPOINT/$fileId?uploadType=media", "POST")
-            connection.setRequestProperty("X-HTTP-Method-Override", "PATCH")
-            connection.setRequestProperty("Content-Type", mimeType)
-            connection.doOutput = true
-            connection.outputStream.use { it.write(content) }
-            connection.responseCode in 200..299
-        }.getOrDefault(false)
+    fun updateFileContent(fileId: String, mimeType: String, content: ByteArray) {
+        // Android's HttpURLConnection rejects the literal PATCH verb, so use the
+        // method-override header that the Google APIs explicitly support instead.
+        val connection = openConnection("$UPLOAD_ENDPOINT/$fileId?uploadType=media", "POST")
+        connection.setRequestProperty("X-HTTP-Method-Override", "PATCH")
+        connection.setRequestProperty("Content-Type", mimeType)
+        connection.doOutput = true
+        connection.outputStream.use { it.write(content) }
+        requireSuccessBody(connection)
     }
 
     private fun folderExists(folderId: String): Boolean {
-        return runCatching {
-            val connection = openConnection("$FILES_ENDPOINT/$folderId?fields=id,trashed", "GET")
-            if (connection.responseCode != HttpURLConnection.HTTP_OK) return@runCatching false
-            !JSONObject(readBody(connection)).optBoolean("trashed", false)
-        }.getOrDefault(false)
+        val connection = openConnection("$FILES_ENDPOINT/$folderId?fields=id,trashed", "GET")
+        if (connection.responseCode == HttpURLConnection.HTTP_NOT_FOUND) {
+            return false
+        }
+        return !JSONObject(requireSuccessBody(connection)).optBoolean("trashed", false)
     }
 
     private fun findFolderId(): String? {
         val query =
             "mimeType='application/vnd.google-apps.folder' and name='${escapeQueryValue(DriveSyncConstants.DRIVE_FOLDER_NAME)}'" +
                 " and 'root' in parents and trashed=false"
-        val url = "$FILES_ENDPOINT?q=${encode(query)}&fields=files(id,name)&spaces=drive"
+        val url = "$FILES_ENDPOINT?q=${encode(query)}&fields=files(id,name)&spaces=drive&orderBy=createdTime"
 
-        return runCatching {
-            val connection = openConnection(url, "GET")
-            if (connection.responseCode != HttpURLConnection.HTTP_OK) return@runCatching null
-            val files = JSONObject(readBody(connection)).optJSONArray("files") ?: return@runCatching null
-            if (files.length() == 0) null else files.getJSONObject(0).getString("id")
-        }.getOrNull()
+        val connection = openConnection(url, "GET")
+        val files = JSONObject(requireSuccessBody(connection)).optJSONArray("files")
+        return if (files == null || files.length() == 0) null else files.getJSONObject(0).getString("id")
     }
 
-    private fun createFolder(): String? {
-        return runCatching {
-            val connection = openConnection(FILES_ENDPOINT, "POST")
-            connection.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
-            connection.doOutput = true
-            val body = JSONObject().apply {
-                put("name", DriveSyncConstants.DRIVE_FOLDER_NAME)
-                put("mimeType", "application/vnd.google-apps.folder")
-                put("parents", JSONArray().put("root"))
-            }
-            connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
-            if (connection.responseCode !in 200..299) return@runCatching null
-            JSONObject(readBody(connection)).getString("id")
-        }.getOrNull()
+    private fun createFolder(): String {
+        val connection = openConnection(FILES_ENDPOINT, "POST")
+        connection.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+        connection.doOutput = true
+        val body = JSONObject().apply {
+            put("name", DriveSyncConstants.DRIVE_FOLDER_NAME)
+            put("mimeType", "application/vnd.google-apps.folder")
+            put("parents", JSONArray().put("root"))
+        }
+        connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+        return JSONObject(requireSuccessBody(connection)).getString("id")
+    }
+
+    private fun requireSuccessBody(connection: HttpURLConnection): String {
+        val responseCode = connection.responseCode
+        if (responseCode !in 200..299) {
+            val errorDetail = runCatching {
+                connection.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
+            }.getOrNull()
+            throw IOException("Drive API request failed ($responseCode): ${errorDetail ?: connection.responseMessage}")
+        }
+        return readBody(connection)
     }
 
     private fun buildMultipartBody(
