@@ -88,6 +88,9 @@ class MainActivity : AppCompatActivity() {
         binding.chooseSyncFolderButton.setOnClickListener {
             showDriveSignInHelp()
         }
+        binding.syncNowButton.setOnClickListener {
+            viewModel.syncNow()
+        }
         binding.disableSyncButton.setOnClickListener {
             googleSignInClient.signOut()
             viewModel.clearAutoSync()
@@ -187,10 +190,16 @@ class MainActivity : AppCompatActivity() {
         } else {
             getString(R.string.auto_sync_status_disabled)
         }
+        binding.lastSyncStatusText.text = state.autoSyncLastStatusText
         binding.chooseSyncFolderButton.text = if (state.autoSyncEnabled) {
             getString(R.string.change_sync_folder)
         } else {
             getString(R.string.choose_sync_folder)
+        }
+        binding.syncNowButton.visibility = if (state.autoSyncEnabled) {
+            android.view.View.VISIBLE
+        } else {
+            android.view.View.GONE
         }
         binding.disableSyncButton.visibility = if (state.autoSyncEnabled) {
             android.view.View.VISIBLE

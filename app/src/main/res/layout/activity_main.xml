@@ -196,6 +196,22 @@
             android:layout_marginTop="20dp"
             android:text="@string/auto_sync_status_disabled" />
 
+        <TextView
+            android:id="@+id/lastSyncStatusText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/auto_sync_last_status_disabled" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/syncNowButton"
+            style="?attr/materialButtonOutlinedStyle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="@string/sync_now"
+            android:visibility="gone" />
+
         <com.google.android.material.button.MaterialButton
             android:id="@+id/chooseSyncFolderButton"
             style="?attr/materialButtonOutlinedStyle"

@@ -13,6 +13,7 @@ import java.util.concurrent.TimeUnit
 object LogSyncScheduler {
 
     fun enable(context: Context) {
+        disable(context)
         ensurePeriodic(context)
         enqueueImmediate(context)
     }
@@ -52,7 +53,7 @@ object LogSyncScheduler {
 
     private fun syncConstraints(): Constraints {
         return Constraints.Builder()
-            .setRequiredNetworkType(NetworkType.UNMETERED)
+            .setRequiredNetworkType(NetworkType.CONNECTED)
             .build()
     }
 

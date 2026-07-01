@@ -208,6 +208,7 @@ data class MainUiState(
     val lastSavedStorageReference: String?,
     val autoSyncEnabled: Boolean,
     val autoSyncDestinationLabel: String?,
+    val autoSyncLastStatusText: String,
 ) {
     companion object {
         fun initial(sensorAvailable: Boolean, sensorDetails: SensorDetails?, lastLog: LogFileItem?) = MainUiState(
@@ -225,6 +226,7 @@ data class MainUiState(
             lastSavedStorageReference = lastLog?.storageReference,
             autoSyncEnabled = false,
             autoSyncDestinationLabel = null,
+            autoSyncLastStatusText = "",
         )
     }
 }

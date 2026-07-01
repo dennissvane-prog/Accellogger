@@ -2,6 +2,8 @@ package com.example.accellogger
 
 import android.accounts.Account
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
@@ -19,10 +21,19 @@ class LogSyncWorker(
 
     private val autoSyncPreferences = AutoSyncPreferences(appContext)
     private val logFileManager = LogFileManager(appContext)
+    private val connectivityManager =
+        appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         val config = autoSyncPreferences.loadConfig()
         val accountEmail = config.accountEmail ?: return@withContext Result.success()
+
+        if (!hasValidatedInternetConnection()) {
+            autoSyncPreferences.markSyncQueued(getString(R.string.sync_status_detail_waiting_for_internet))
+            return@withContext Result.retry()
+        }
+
+        autoSyncPreferences.markSyncRunning(getString(R.string.sync_status_detail_running))
 
         val accessToken = try {
             fetchAccessToken(accountEmail)
@@ -31,6 +42,7 @@ class LogSyncWorker(
             // consent/token issue). Retrying is safe here: previously a non-IOException
             // permanently failed the work, so a one-time consent hiccup could look like
             // sync being stuck forever with no files ever sent.
+            autoSyncPreferences.markSyncFailure(getString(R.string.sync_status_detail_retrying))
             return@withContext Result.retry()
         }
 
@@ -42,6 +54,7 @@ class LogSyncWorker(
             // that previously produced duplicate "AccelLogger" folders in Drive every
             // time a request hiccupped, which is why files appeared to fork into
             // separate copies instead of updating in place.
+            autoSyncPreferences.markSyncFailure(getString(R.string.sync_status_detail_retrying))
             return@withContext Result.retry()
         }
         if (folderId != config.folderId) {
@@ -49,6 +62,7 @@ class LogSyncWorker(
         }
 
         var hadFailure = false
+        var syncedFileCount = 0
         logFileManager.listLogs().forEach { logItem ->
             if (autoSyncPreferences.syncedFileSize(logItem.fileName) == logItem.sizeBytes) {
                 return@forEach
@@ -76,18 +90,42 @@ class LogSyncWorker(
             }
 
             if (succeeded) {
+                syncedFileCount += 1
                 autoSyncPreferences.markFileSynced(logItem.fileName, logItem.sizeBytes)
             } else {
                 hadFailure = true
             }
         }
 
-        if (hadFailure) Result.retry() else Result.success()
+        if (hadFailure) {
+            autoSyncPreferences.markSyncFailure(getString(R.string.sync_status_detail_retrying))
+            Result.retry()
+        } else {
+            val detail = if (syncedFileCount == 0) {
+                getString(R.string.sync_status_detail_up_to_date)
+            } else {
+                getString(R.string.sync_status_detail_synced_files, syncedFileCount)
+            }
+            autoSyncPreferences.markSyncSuccess(detail)
+            Result.success()
+        }
     }
 
     private fun fetchAccessToken(accountEmail: String): String {
         val account = Account(accountEmail, GOOGLE_ACCOUNT_TYPE)
         return GoogleAuthUtil.getToken(applicationContext, account, "oauth2:${DriveSyncConstants.DRIVE_SCOPE_URL}")
+    }
+
+    private fun hasValidatedInternetConnection(): Boolean {
+        val manager = connectivityManager ?: return false
+        val activeNetwork = manager.activeNetwork ?: return false
+        val capabilities = manager.getNetworkCapabilities(activeNetwork) ?: return false
+        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    }
+
+    private fun getString(resId: Int, vararg formatArgs: Any): String {
+        return applicationContext.getString(resId, *formatArgs)
     }
 
     private fun readLogBytes(storageReference: String): ByteArray? {
