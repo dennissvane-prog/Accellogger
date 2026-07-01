@@ -1,0 +1,9 @@
+*.keystore
+*.keystore.p12
+*.jks
+debug-keystore-base64.txt
+local.properties
+.gradle/
+build/
+*.iml
+.idea/

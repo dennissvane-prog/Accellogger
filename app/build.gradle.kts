@@ -5,7 +5,7 @@ plugins {
 
 val versionMajor = 1
 val versionMinor = 0
-val versionBuild = 18
+val versionBuild = 19
 
 android {
     namespace = "com.example.accellogger"
@@ -19,6 +19,25 @@ android {
         versionName = "$versionMajor.$versionMinor.$versionBuild"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    // Stable debug signing so the OAuth SHA-1 registered in Google Cloud Console
+    // stays valid across builds. The keystore file is NEVER committed to git
+    // (see .gitignore) - it is reconstructed from a GitHub Actions secret at
+    // build time. Locally, this file simply won't exist unless a developer
+    // creates their own copy, so the config only applies when it's present -
+    // otherwise Gradle silently falls back to its own default debug signing.
+    val localDebugKeystore = file("debug.keystore.p12")
+    if (localDebugKeystore.exists()) {
+        signingConfigs {
+            getByName("debug") {
+                storeFile = localDebugKeystore
+                storeType = "PKCS12"
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
     }
 
     buildTypes {
