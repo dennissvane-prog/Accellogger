@@ -4,6 +4,8 @@ import android.content.Intent
 import android.os.Bundle
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.example.accellogger.databinding.ActivityLogsBinding
@@ -22,6 +24,7 @@ class LogsActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityLogsBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        applySystemBarInsets()
 
         logFileManager = LogFileManager(applicationContext)
         adapter = LogsAdapter(
@@ -92,5 +95,26 @@ class LogsActivity : AppCompatActivity() {
                 }
             }
             .show()
+    }
+
+    private fun applySystemBarInsets() {
+        val root = binding.root
+        val initialLeft = root.paddingLeft
+        val initialTop = root.paddingTop
+        val initialRight = root.paddingRight
+        val initialBottom = root.paddingBottom
+
+        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            view.setPadding(
+                initialLeft + systemBars.left,
+                initialTop + systemBars.top,
+                initialRight + systemBars.right,
+                initialBottom + systemBars.bottom,
+            )
+            insets
+        }
+
+        ViewCompat.requestApplyInsets(root)
     }
 }

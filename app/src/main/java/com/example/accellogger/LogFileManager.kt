@@ -18,27 +18,39 @@ import java.time.ZoneId
 
 class LogFileManager(private val context: Context) {
 
-    suspend fun appendEventSamples(eventSamples: List<LoggedSample>): LogFileItem? =
+    suspend fun appendEventWindow(eventWindow: LoggedEventWindow): LogFileItem? =
         withContext(Dispatchers.IO) {
-            if (eventSamples.isEmpty()) {
+            if (eventWindow.samples.isEmpty()) {
                 return@withContext null
             }
 
-            var latestItem: LogFileItem? = null
-            eventSamples
+            var latestPrimaryLogItem: LogFileItem? = null
+            eventWindow.samples
                 .groupBy { dayKeyFor(it.systemTimeMs) }
                 .values
                 .forEach { samplesForDay ->
-                    latestItem = appendSamplesToDailyLog(
+                    latestPrimaryLogItem = appendDailyCsvRows(
                         timestampMs = samplesForDay.first().systemTimeMs,
-                        samples = samplesForDay,
+                        fileName = primaryDailyFileName(samplesForDay.first().systemTimeMs),
+                        header = PRIMARY_CSV_HEADER,
+                        rows = samplesForDay.map { it.toCsvRow() },
                     )
                 }
 
-            latestItem
+            appendDailyCsvRows(
+                timestampMs = eventWindow.geolocationRecord.eventTriggerTimeMs,
+                fileName = geolocationDailyFileName(eventWindow.geolocationRecord.eventTriggerTimeMs),
+                header = GEOLOCATION_CSV_HEADER,
+                rows = listOf(eventWindow.geolocationRecord.toCsvRow()),
+            )
+
+            latestPrimaryLogItem
         }
 
-    fun latestLog(): LogFileItem? = listLogs().firstOrNull()
+    fun latestLog(): LogFileItem? {
+        val logs = listLogs()
+        return logs.firstOrNull { isPrimaryLogFileName(it.fileName) } ?: logs.firstOrNull()
+    }
 
     fun listLogs(): List<LogFileItem> {
         return if (usesMediaStoreStorage()) {
@@ -65,16 +77,25 @@ class LogFileManager(private val context: Context) {
         return Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
     }
 
-    private fun appendSamplesToDailyLog(timestampMs: Long, samples: List<LoggedSample>): LogFileItem {
+    private fun appendDailyCsvRows(
+        timestampMs: Long,
+        fileName: String,
+        header: String,
+        rows: List<String>,
+    ): LogFileItem {
         return if (usesMediaStoreStorage()) {
-            appendMediaStoreLog(timestampMs, samples)
+            appendMediaStoreLog(timestampMs, fileName, header, rows)
         } else {
-            appendLegacyLog(timestampMs, samples)
+            appendLegacyLog(timestampMs, fileName, header, rows)
         }
     }
 
-    private fun appendMediaStoreLog(timestampMs: Long, samples: List<LoggedSample>): LogFileItem {
-        val fileName = dailyFileName(timestampMs)
+    private fun appendMediaStoreLog(
+        timestampMs: Long,
+        fileName: String,
+        header: String,
+        rows: List<String>,
+    ): LogFileItem {
         val relativePath = "${Environment.DIRECTORY_DOWNLOADS}/AccelLogger/"
         val existingItem = findMediaStoreLog(fileName, relativePath)
         val uri = existingItem?.let { Uri.parse(it.storageReference) }
@@ -86,8 +107,8 @@ class LogFileManager(private val context: Context) {
             ?: throw IllegalStateException(context.getString(R.string.storage_unavailable_error))
 
         bufferedWriter(outputStream).use { writer ->
-            writeHeaderIfNeeded(writer, existingItem?.sizeBytes ?: 0L)
-            samples.forEach { writer.write(it.toCsvRow()) }
+            writeHeaderIfNeeded(writer, existingItem?.sizeBytes ?: 0L, header)
+            rows.forEach { row -> writer.write(row) }
             writer.flush()
         }
 
@@ -102,7 +123,12 @@ class LogFileManager(private val context: Context) {
     }
 
     @Suppress("DEPRECATION")
-    private fun appendLegacyLog(timestampMs: Long, samples: List<LoggedSample>): LogFileItem {
+    private fun appendLegacyLog(
+        timestampMs: Long,
+        fileName: String,
+        header: String,
+        rows: List<String>,
+    ): LogFileItem {
         val directory = context.getExternalFilesDir(null)
             ?: throw IllegalStateException(context.getString(R.string.storage_unavailable_error))
         if (!directory.exists() && !directory.mkdirs()) {
@@ -114,8 +140,8 @@ class LogFileManager(private val context: Context) {
 
         FileOutputStream(file, true).use { outputStream ->
             bufferedWriter(outputStream).use { writer ->
-                writeHeaderIfNeeded(writer, existingSizeBytes)
-                samples.forEach { writer.write(it.toCsvRow()) }
+                writeHeaderIfNeeded(writer, existingSizeBytes, header)
+                rows.forEach { row -> writer.write(row) }
                 writer.flush()
             }
         }
@@ -128,9 +154,13 @@ class LogFileManager(private val context: Context) {
         )
     }
 
-    private fun writeHeaderIfNeeded(writer: BufferedWriter, existingSizeBytes: Long) {
+    private fun writeHeaderIfNeeded(
+        writer: BufferedWriter,
+        existingSizeBytes: Long,
+        header: String,
+    ) {
         if (existingSizeBytes == 0L) {
-            writer.write(CSV_HEADER)
+            writer.write(header)
             writer.newLine()
         }
     }
@@ -254,7 +284,10 @@ class LogFileManager(private val context: Context) {
                     val modifiedTimeMs = cursor.getLong(modifiedColumn) * 1000L
                     val uri = Uri.withAppendedPath(MediaStore.Downloads.EXTERNAL_CONTENT_URI, id.toString())
 
-                    val isOurLog = fileName.startsWith("accelerometer_log_") && fileName.endsWith(".csv", ignoreCase = true) && relativePath.contains("AccelLogger")
+                    val isOurLog =
+                        isManagedLogFileName(fileName) &&
+                            fileName.endsWith(".csv", ignoreCase = true) &&
+                            relativePath.contains("AccelLogger")
                     if (isOurLog) {
                         add(
                             LogFileItem(
@@ -273,7 +306,11 @@ class LogFileManager(private val context: Context) {
     @Suppress("DEPRECATION")
     private fun listLegacyLogs(): List<LogFileItem> {
         val directory = context.getExternalFilesDir(null) ?: return emptyList()
-        val files = directory.listFiles { file -> file.isFile && file.extension.equals("csv", ignoreCase = true) }
+        val files = directory.listFiles { file ->
+            file.isFile &&
+                file.extension.equals("csv", ignoreCase = true) &&
+                isManagedLogFileName(file.name)
+        }
             ?: return emptyList()
 
         return files
@@ -309,12 +346,28 @@ class LogFileManager(private val context: Context) {
     }
 
     companion object {
-        private const val LOG_FILE_FORMAT_VERSION_SUFFIX = "_v2"
-        private const val CSV_HEADER =
+        private const val PRIMARY_LOG_FILE_FORMAT_VERSION_SUFFIX = "_v2"
+        private const val GEOLOCATION_LOG_FILE_FORMAT_VERSION_SUFFIX = "_v1"
+        private const val PRIMARY_CSV_HEADER =
             "utc_timestamp,sample_index,elapsed_ms,event_timestamp_ns,system_time_ms,x_mps2,y_mps2,z_mps2,magnitude_mps2,accuracy"
+        private const val GEOLOCATION_CSV_HEADER =
+            "event_trigger_utc,event_peak_utc,event_window_start_utc,event_window_end_utc,event_trigger_ms,event_peak_ms,event_window_start_ms,event_window_end_ms,trigger_sample_index,peak_sample_index,peak_magnitude_mps2,gps_status,gps_fix_utc,gps_fix_ms,gps_latitude,gps_longitude,gps_accuracy_m,gps_provider,wifi_status,wifi_observed_utc,wifi_observed_ms,wifi_bssids,ble_status,ble_observed_utc,ble_observed_ms,ble_beacons"
 
-        private fun dailyFileName(timestampMs: Long): String {
-            return "accelerometer_log_${dayKeyFor(timestampMs)}${LOG_FILE_FORMAT_VERSION_SUFFIX}.csv"
+        private fun primaryDailyFileName(timestampMs: Long): String {
+            return "accelerometer_log_${dayKeyFor(timestampMs)}${PRIMARY_LOG_FILE_FORMAT_VERSION_SUFFIX}.csv"
+        }
+
+        private fun geolocationDailyFileName(timestampMs: Long): String {
+            return "accelerometer_geolocation_${dayKeyFor(timestampMs)}${GEOLOCATION_LOG_FILE_FORMAT_VERSION_SUFFIX}.csv"
+        }
+
+        private fun isManagedLogFileName(fileName: String): Boolean {
+            return isPrimaryLogFileName(fileName) ||
+                fileName.startsWith("accelerometer_geolocation_")
+        }
+
+        private fun isPrimaryLogFileName(fileName: String): Boolean {
+            return fileName.startsWith("accelerometer_log_")
         }
 
         private fun dayKeyFor(timestampMs: Long): String {

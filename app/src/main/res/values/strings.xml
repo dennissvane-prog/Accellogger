@@ -47,7 +47,8 @@
     <string name="file_write_error">Unable to write to the current log file.</string>
     <string name="file_close_error">Unable to close the current log file cleanly.</string>
     <string name="storage_unavailable_error">App-specific external storage is unavailable.</string>
-    <string name="share_sheet_title">Share accelerometer log</string>
+    <string name="share_sheet_title">Share log file</string>
+    <string name="geolocation_permissions_limited">Motion logging will continue, but the geolocation sidecar will be limited until location, Wi-Fi, and BLE permissions are granted.</string>
     <string name="log_file_details">%1$s • %2$s</string>
     <string name="unknown_sensor_value">Unknown</string>
     <string name="logging_notification_channel_name">Background logging</string>

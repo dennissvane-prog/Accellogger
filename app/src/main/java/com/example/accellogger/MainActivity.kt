@@ -7,8 +7,11 @@ import android.text.Spanned
 import android.text.style.RelativeSizeSpan
 import android.widget.EditText
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -23,11 +26,19 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private val viewModel: MainViewModel by viewModels()
+    private val geolocationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grantResults ->
+            if (grantResults.values.any { granted -> !granted }) {
+                Toast.makeText(this, R.string.geolocation_permissions_limited, Toast.LENGTH_LONG).show()
+            }
+            viewModel.startLogging()
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        applySystemBarInsets()
         binding.titleText.text = buildTitleText()
 
         binding.sampleRateInput.setText(viewModel.uiState.value.sampleRateHz.toString())
@@ -56,7 +67,7 @@ class MainActivity : AppCompatActivity() {
             if (viewModel.uiState.value.isLogging) {
                 viewModel.stopLogging()
             } else {
-                viewModel.startLogging()
+                startLoggingWithPermissions()
             }
         }
         binding.shareLastLogButton.setOnClickListener { shareLastLog() }
@@ -179,6 +190,16 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
+    private fun startLoggingWithPermissions() {
+        val missingPermissions = GeolocationEvidenceCollector.missingRuntimePermissions(this)
+        if (missingPermissions.isEmpty()) {
+            viewModel.startLogging()
+            return
+        }
+
+        geolocationPermissionLauncher.launch(missingPermissions)
+    }
+
     private fun formatElapsed(elapsedMs: Long): String {
         val hours = TimeUnit.MILLISECONDS.toHours(elapsedMs)
         val minutes = TimeUnit.MILLISECONDS.toMinutes(elapsedMs) % 60
@@ -221,5 +242,26 @@ class MainActivity : AppCompatActivity() {
             append(versionText)
             setSpan(RelativeSizeSpan(0.55f), versionStart, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         }
+    }
+
+    private fun applySystemBarInsets() {
+        val root = binding.root
+        val initialLeft = root.paddingLeft
+        val initialTop = root.paddingTop
+        val initialRight = root.paddingRight
+        val initialBottom = root.paddingBottom
+
+        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            view.setPadding(
+                initialLeft + systemBars.left,
+                initialTop + systemBars.top,
+                initialRight + systemBars.right,
+                initialBottom + systemBars.bottom,
+            )
+            insets
+        }
+
+        ViewCompat.requestApplyInsets(root)
     }
 }

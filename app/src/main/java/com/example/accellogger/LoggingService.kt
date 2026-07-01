@@ -34,15 +34,17 @@ class LoggingService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private lateinit var logFileManager: LogFileManager
     private lateinit var accelerometerLogger: AccelerometerLogger
+    private lateinit var geolocationEvidenceCollector: GeolocationEvidenceCollector
 
     private var sampleCount = 0L
     private var loggingStartedElapsedRealtimeMs = 0L
     private var loggingStartedSensorTimestampNs: Long? = null
     private var elapsedJob: Job? = null
-    private var eventWriterChannel: Channel<List<LoggedSample>>? = null
+    private var eventWriterChannel: Channel<LoggedEventWindow>? = null
     private var eventWriterJob: Job? = null
     private val preEventSamples = ArrayDeque<LoggedSample>()
     private val activeEventSamples = mutableListOf<LoggedSample>()
+    private var activeEventTriggerSample: LoggedSample? = null
     private var preEventSampleCapacity = 0
     private var postEventSampleCount = 0
     private var postEventSamplesRemaining = 0
@@ -54,6 +56,7 @@ class LoggingService : Service() {
     override fun onCreate() {
         super.onCreate()
         logFileManager = LogFileManager(applicationContext)
+        geolocationEvidenceCollector = GeolocationEvidenceCollector(applicationContext)
         accelerometerLogger = AccelerometerLogger(
             context = applicationContext,
             onSample = ::onSampleReceived,
@@ -80,7 +83,8 @@ class LoggingService : Service() {
                     startForeground(
                         NOTIFICATION_ID,
                         notification,
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_HEALTH,
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_HEALTH or
+                            ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION,
                     )
                 } else {
                     startForeground(NOTIFICATION_ID, notification)
@@ -96,6 +100,7 @@ class LoggingService : Service() {
 
     override fun onDestroy() {
         accelerometerLogger.stop()
+        geolocationEvidenceCollector.release()
         elapsedJob?.cancel()
         eventWriterChannel?.close()
         eventWriterJob?.cancel()
@@ -149,9 +154,11 @@ class LoggingService : Service() {
         postEventSamplesRemaining = 0
         preEventSamples.clear()
         activeEventSamples.clear()
+        activeEventTriggerSample = null
         lastSavedFileInSession = null
         writeFailureMessage = null
         startEventWriter()
+        geolocationEvidenceCollector.start()
         elapsedJob?.cancel()
         elapsedJob = serviceScope.launch {
             while (true) {
@@ -225,6 +232,7 @@ class LoggingService : Service() {
                 activeEventSamples.addAll(preEventSamples)
             }
             activeEventSamples.add(loggedSample)
+            activeEventTriggerSample = loggedSample
             postEventSamplesRemaining = postEventSampleCount
         }
 
@@ -240,10 +248,20 @@ class LoggingService : Service() {
         }
 
         val eventSamples = activeEventSamples.toList()
+        val triggerSample = activeEventTriggerSample ?: eventSamples.first()
         activeEventSamples.clear()
+        activeEventTriggerSample = null
         postEventSamplesRemaining = 0
 
-        val enqueued = enqueueEventWindow(eventSamples)
+        val enqueued = enqueueEventWindow(
+            LoggedEventWindow(
+                samples = eventSamples,
+                geolocationRecord = geolocationEvidenceCollector.createEventRecord(
+                    eventSamples = eventSamples,
+                    triggerSample = triggerSample,
+                ),
+            ),
+        )
         if (!enqueued && stopOnFailure) {
             serviceScope.launch {
                 emitEvent(
@@ -258,12 +276,12 @@ class LoggingService : Service() {
         return enqueued
     }
 
-    private fun enqueueEventWindow(eventSamples: List<LoggedSample>): Boolean {
+    private fun enqueueEventWindow(eventWindow: LoggedEventWindow): Boolean {
         if (writeFailureMessage != null) {
             return false
         }
 
-        val sendResult = eventWriterChannel?.trySend(eventSamples)
+        val sendResult = eventWriterChannel?.trySend(eventWindow)
         if (sendResult?.isSuccess == true) {
             return true
         }
@@ -273,12 +291,12 @@ class LoggingService : Service() {
     }
 
     private fun startEventWriter() {
-        val channel = Channel<List<LoggedSample>>(capacity = EVENT_WRITE_CHANNEL_CAPACITY)
+        val channel = Channel<LoggedEventWindow>(capacity = EVENT_WRITE_CHANNEL_CAPACITY)
         eventWriterChannel = channel
         eventWriterJob = serviceScope.launch(Dispatchers.IO) {
             try {
-                for (eventSamples in channel) {
-                    val savedFile = logFileManager.appendEventSamples(eventSamples) ?: continue
+                for (eventWindow in channel) {
+                    val savedFile = logFileManager.appendEventWindow(eventWindow) ?: continue
                     withContext(Dispatchers.Main.immediate) {
                         lastSavedFileInSession = savedFile
                         _state.update {
@@ -335,6 +353,7 @@ class LoggingService : Service() {
         }
 
         accelerometerLogger.stop()
+        geolocationEvidenceCollector.stop()
         elapsedJob?.cancel()
         elapsedJob = null
 
@@ -342,6 +361,7 @@ class LoggingService : Service() {
             flushActiveEventWindow(stopOnFailure = false)
         } else {
             activeEventSamples.clear()
+            activeEventTriggerSample = null
             postEventSamplesRemaining = 0
         }
 
@@ -382,6 +402,7 @@ class LoggingService : Service() {
         loggingStartedSensorTimestampNs = null
         preEventSamples.clear()
         activeEventSamples.clear()
+        activeEventTriggerSample = null
         preEventSampleCapacity = 0
         postEventSampleCount = 0
         postEventSamplesRemaining = 0
