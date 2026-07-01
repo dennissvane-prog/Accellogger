@@ -1,6 +1,7 @@
 package com.example.accellogger
 
 import android.app.Application
+import android.net.Uri
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -17,6 +18,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val appContext = application.applicationContext
     private val logFileManager = LogFileManager(appContext)
+    private val autoSyncPreferences = AutoSyncPreferences(appContext)
     private val accelerometerLogger = AccelerometerLogger(
         context = appContext,
         onSample = {},
@@ -45,6 +47,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var appVisible = false
 
     init {
+        refreshAutoSyncConfig()
+        if (autoSyncPreferences.loadConfig().isEnabled) {
+            LogSyncScheduler.enable(appContext)
+        }
         viewModelScope.launch {
             LoggingService.state.collect(::applyLoggingState)
         }
@@ -56,6 +62,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun onAppVisible() {
         appVisible = true
         refreshLastSavedLog()
+        refreshAutoSyncConfig()
         if (_uiState.value.sensorAvailable && !_uiState.value.isLogging) {
             accelerometerLogger.startLiveUpdates(_uiState.value.sampleRateHz)
         }
@@ -126,12 +133,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         appContext.startService(LoggingService.stopIntent(appContext))
     }
 
+    fun configureAutoSync(destinationTreeUri: Uri, destinationDisplayName: String) {
+        val folderName = destinationDisplayName.ifBlank {
+            appContext.getString(R.string.auto_sync_destination_selected)
+        }
+        autoSyncPreferences.saveDestination(destinationTreeUri, folderName)
+        LogSyncScheduler.enable(appContext)
+        refreshAutoSyncConfig()
+        _events.tryEmit(MainUiEvent.Info(getString(R.string.auto_sync_configured_message, folderName)))
+    }
+
+    fun clearAutoSync() {
+        autoSyncPreferences.clearDestination()
+        LogSyncScheduler.disable(appContext)
+        refreshAutoSyncConfig()
+        _events.tryEmit(MainUiEvent.Info(getString(R.string.auto_sync_disabled_message)))
+    }
+
     private fun refreshLastSavedLog() {
         val latest = logFileManager.latestLog()
         _uiState.update {
             it.copy(
                 lastSavedFileName = latest?.fileName,
                 lastSavedStorageReference = latest?.storageReference,
+            )
+        }
+    }
+
+    private fun refreshAutoSyncConfig() {
+        val config = autoSyncPreferences.loadConfig()
+        _uiState.update {
+            it.copy(
+                autoSyncEnabled = config.isEnabled,
+                autoSyncDestinationLabel = config.destinationDisplayName,
             )
         }
     }
@@ -180,6 +214,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun emitError(message: String) {
         _events.tryEmit(MainUiEvent.Error(message))
+    }
+
+    private fun getString(resId: Int, vararg formatArgs: Any): String {
+        return appContext.getString(resId, *formatArgs)
     }
 
     override fun onCleared() {

@@ -206,6 +206,8 @@ data class MainUiState(
     val eventWindowMs: Int,
     val lastSavedFileName: String?,
     val lastSavedStorageReference: String?,
+    val autoSyncEnabled: Boolean,
+    val autoSyncDestinationLabel: String?,
 ) {
     companion object {
         fun initial(sensorAvailable: Boolean, sensorDetails: SensorDetails?, lastLog: LogFileItem?) = MainUiState(
@@ -221,6 +223,8 @@ data class MainUiState(
             eventWindowMs = DEFAULT_EVENT_WINDOW_MS,
             lastSavedFileName = lastLog?.fileName,
             lastSavedStorageReference = lastLog?.storageReference,
+            autoSyncEnabled = false,
+            autoSyncDestinationLabel = null,
         )
     }
 }

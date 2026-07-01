@@ -189,6 +189,30 @@
             android:layout_marginTop="12dp"
             android:text="@string/share_last_log" />
 
+        <TextView
+            android:id="@+id/syncStatusText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="@string/auto_sync_status_disabled" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/chooseSyncFolderButton"
+            style="?attr/materialButtonOutlinedStyle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="@string/choose_sync_folder" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/disableSyncButton"
+            style="?attr/materialButtonOutlinedStyle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="@string/disable_auto_sync"
+            android:visibility="gone" />
+
         <com.google.android.material.button.MaterialButton
             android:id="@+id/viewLogsButton"
             style="?attr/materialButtonOutlinedStyle"

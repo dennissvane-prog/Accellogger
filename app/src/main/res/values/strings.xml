@@ -48,6 +48,15 @@
     <string name="file_close_error">Unable to close the current log file cleanly.</string>
     <string name="storage_unavailable_error">App-specific external storage is unavailable.</string>
     <string name="share_sheet_title">Share log file</string>
+    <string name="auto_sync_status_disabled">Auto-sync: Off</string>
+    <string name="auto_sync_status_enabled">Auto-sync to: %1$s</string>
+    <string name="choose_sync_folder">Choose Sync Folder</string>
+    <string name="change_sync_folder">Change Sync Folder</string>
+    <string name="disable_auto_sync">Disable Auto Sync</string>
+    <string name="auto_sync_destination_selected">Selected folder</string>
+    <string name="auto_sync_permission_error">Unable to keep access to the selected sync folder.</string>
+    <string name="auto_sync_configured_message">Auto-sync is armed for %1$s.</string>
+    <string name="auto_sync_disabled_message">Auto-sync is off.</string>
     <string name="geolocation_permissions_limited">Motion logging will continue, but the geolocation sidecar will be limited until location, Wi-Fi, and BLE permissions are granted.</string>
     <string name="log_file_details">%1$s • %2$s</string>
     <string name="unknown_sensor_value">Unknown</string>

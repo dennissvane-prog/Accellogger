@@ -297,6 +297,7 @@ class LoggingService : Service() {
             try {
                 for (eventWindow in channel) {
                     val savedFile = logFileManager.appendEventWindow(eventWindow) ?: continue
+                    LogSyncScheduler.enqueueImmediate(applicationContext)
                     withContext(Dispatchers.Main.immediate) {
                         lastSavedFileInSession = savedFile
                         _state.update {

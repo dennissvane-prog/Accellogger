@@ -7,6 +7,7 @@ import android.text.Spanned
 import android.text.style.RelativeSizeSpan
 import android.widget.EditText
 import android.widget.Toast
+import androidx.documentfile.provider.DocumentFile
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
@@ -33,6 +34,25 @@ class MainActivity : AppCompatActivity() {
             }
             viewModel.startLogging()
         }
+    private val syncFolderLauncher = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri == null) {
+            return@registerForActivityResult
+        }
+
+        val permissionFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        val persisted = runCatching {
+            contentResolver.takePersistableUriPermission(uri, permissionFlags)
+        }.isSuccess
+        if (!persisted) {
+            handleEvent(MainUiEvent.Error(getString(R.string.auto_sync_permission_error)))
+            return@registerForActivityResult
+        }
+
+        val folderName = DocumentFile.fromTreeUri(this, uri)?.name
+            ?.takeIf { it.isNotBlank() }
+            ?: getString(R.string.auto_sync_destination_selected)
+        viewModel.configureAutoSync(uri, folderName)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -71,6 +91,12 @@ class MainActivity : AppCompatActivity() {
             }
         }
         binding.shareLastLogButton.setOnClickListener { shareLastLog() }
+        binding.chooseSyncFolderButton.setOnClickListener {
+            syncFolderLauncher.launch(null)
+        }
+        binding.disableSyncButton.setOnClickListener {
+            viewModel.clearAutoSync()
+        }
         binding.viewLogsButton.setOnClickListener {
             startActivity(Intent(this, LogsActivity::class.java))
         }
@@ -158,6 +184,24 @@ class MainActivity : AppCompatActivity() {
             R.string.last_file_label,
             state.lastSavedFileName ?: getString(R.string.no_log_saved),
         )
+        binding.syncStatusText.text = if (state.autoSyncEnabled) {
+            getString(
+                R.string.auto_sync_status_enabled,
+                state.autoSyncDestinationLabel ?: getString(R.string.auto_sync_destination_selected),
+            )
+        } else {
+            getString(R.string.auto_sync_status_disabled)
+        }
+        binding.chooseSyncFolderButton.text = if (state.autoSyncEnabled) {
+            getString(R.string.change_sync_folder)
+        } else {
+            getString(R.string.choose_sync_folder)
+        }
+        binding.disableSyncButton.visibility = if (state.autoSyncEnabled) {
+            android.view.View.VISIBLE
+        } else {
+            android.view.View.GONE
+        }
     }
 
     private fun handleEvent(event: MainUiEvent) {

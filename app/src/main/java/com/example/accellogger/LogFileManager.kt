@@ -135,7 +135,7 @@ class LogFileManager(private val context: Context) {
             throw IllegalStateException(context.getString(R.string.storage_unavailable_error))
         }
 
-        val file = File(directory, dailyFileName(timestampMs))
+        val file = File(directory, fileName)
         val existingSizeBytes = if (file.exists()) file.length() else 0L
 
         FileOutputStream(file, true).use { outputStream ->
