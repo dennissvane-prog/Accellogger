@@ -55,6 +55,8 @@ class GeolocationEvidenceCollector(private val context: Context) {
     private var bleScanStarted = false
     private var locationUpdatesStarted = false
     private var lastSuggestedOpenSsids: Set<String> = emptySet()
+    private var lastLegacyAttemptSsid: String? = null
+    private val openWifiValidationFailures = LinkedHashMap<String, Long>()
     private val recentBleObservations = LinkedHashMap<String, BleBeaconObservation>()
 
     private val locationListener = object : LocationListener {
@@ -100,6 +102,8 @@ class GeolocationEvidenceCollector(private val context: Context) {
         stopLocationUpdates()
         stopBleScan()
         clearOpenWifiSuggestions()
+        lastLegacyAttemptSsid = null
+        openWifiValidationFailures.clear()
         latestLocation = null
         latestWifiObservationTimeMs = null
         latestWifiAccessPoints = emptyList()
@@ -284,12 +288,35 @@ class GeolocationEvidenceCollector(private val context: Context) {
         }
 
         val candidates = openWifiCandidates(scanResults)
+        pruneOpenWifiValidationFailures(candidates)
+
+        val currentSsid = runCatching { manager.connectionInfo?.ssid }
+            .getOrNull()
+            ?.trim('"')
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            updateOpenWifiSuggestions(manager, candidates)
+            // If we're connected to a network we ourselves suggested but it still has no
+            // internet after a full refresh cycle, blacklist it and drop it from the
+            // suggestion set. Removing a suggestion the device is currently using makes the
+            // system disconnect from it, so it falls back to another suggested/known
+            // network instead of staying stuck on a no-internet open Wi-Fi indefinitely.
+            if (currentSsid != null && currentSsid in lastSuggestedOpenSsids && !isValidatedWifiConnection()) {
+                openWifiValidationFailures[currentSsid] = SystemClock.elapsedRealtime()
+            }
+
+            val now = SystemClock.elapsedRealtime()
+            val eligibleCandidates = candidates.filter { c ->
+                val failedAt = openWifiValidationFailures[c.SSID]
+                failedAt == null || now - failedAt >= OPEN_WIFI_FAILURE_COOLDOWN_MS
+            }
+            // If every candidate is on cooldown (e.g. only one open network in range),
+            // still suggest something rather than suggesting nothing at all.
+            updateOpenWifiSuggestions(manager, eligibleCandidates.ifEmpty { candidates })
             return
         }
 
         if (isValidatedWifiConnection()) {
+            lastLegacyAttemptSsid = null
             return
         }
 
@@ -297,8 +324,30 @@ class GeolocationEvidenceCollector(private val context: Context) {
             runCatching { manager.setWifiEnabled(true) }
         }
 
-        val candidate = candidates.firstOrNull() ?: return
+        if (candidates.isEmpty()) {
+            return
+        }
+
+        // Still not validated after a full refresh cycle spent on the same open network
+        // we just attempted - it has no internet. Blacklist it for a cooldown so the next
+        // pick moves on to a different open network instead of retrying the dead one forever.
+        if (currentSsid != null && currentSsid == lastLegacyAttemptSsid) {
+            openWifiValidationFailures[currentSsid] = SystemClock.elapsedRealtime()
+        }
+
+        val now = SystemClock.elapsedRealtime()
+        val candidate = candidates.firstOrNull { c ->
+            val failedAt = openWifiValidationFailures[c.SSID]
+            failedAt == null || now - failedAt >= OPEN_WIFI_FAILURE_COOLDOWN_MS
+        } ?: candidates.first()
+
+        lastLegacyAttemptSsid = candidate.SSID
         connectToLegacyOpenWifi(manager, candidate)
+    }
+
+    private fun pruneOpenWifiValidationFailures(candidates: List<WifiScanResult>) {
+        val candidateSsids = candidates.map { it.SSID }.toSet()
+        openWifiValidationFailures.keys.retainAll(candidateSsids)
     }
 
     private fun openWifiCandidates(scanResults: List<WifiScanResult>): List<WifiScanResult> {
@@ -605,6 +654,7 @@ class GeolocationEvidenceCollector(private val context: Context) {
         private const val LOCATION_UPDATE_INTERVAL_MS = 5_000L
         private const val WIFI_REFRESH_INTERVAL_MS = 30_000L
         private const val BLE_RETENTION_MS = 60_000L
+        private const val OPEN_WIFI_FAILURE_COOLDOWN_MS = 5 * 60_000L
         private const val UNKNOWN_BSSID = "02:00:00:00:00:00"
         private const val UNKNOWN_SSID = "<unknown ssid>"
         private const val MAX_OPEN_WIFI_CANDIDATES = 5
