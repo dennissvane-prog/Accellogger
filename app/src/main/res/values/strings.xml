@@ -57,7 +57,8 @@
     <string name="auto_sync_permission_error">Unable to keep access to the selected sync folder.</string>
     <string name="auto_sync_configured_message">Auto-sync is armed for %1$s.</string>
     <string name="auto_sync_disabled_message">Auto-sync is off.</string>
-    <string name="auto_sync_picker_instructions">To store logs in Google Drive, first make sure the Drive app is installed and signed in. In the folder picker, open the side menu if needed, choose Google Drive, open or create a folder, then tap Use this folder.</string>
+    <string name="auto_sync_picker_instructions">To store logs in Google Drive, first make sure the Drive app is installed and signed in. When the app chooser appears, pick "Files" (not your phone\'s own File Manager or Gallery). Inside Files, tap the ☰ menu in the top-left corner, choose Google Drive, open or create a folder, then tap Use this folder.</string>
+    <string name="sync_folder_picker_chooser_title">Choose an app that can browse Google Drive</string>
     <string name="open_google_drive_app">Open Google Drive App</string>
     <string name="open_sync_folder_picker">Open Folder Picker</string>
     <string name="google_drive_not_installed">Google Drive could not be opened directly from this app. Use the folder picker and choose Google Drive from the side menu.</string>

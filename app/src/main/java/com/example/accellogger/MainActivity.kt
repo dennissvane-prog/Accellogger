@@ -1,9 +1,7 @@
 package com.example.accellogger
 
 import android.content.Intent
-import android.os.Build
 import android.os.Bundle
-import android.provider.DocumentsContract
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.style.RelativeSizeSpan
@@ -256,9 +254,18 @@ class MainActivity : AppCompatActivity() {
                 openGoogleDriveApp()
             }
             .setPositiveButton(R.string.open_sync_folder_picker) { _, _ ->
-                syncFolderLauncher.launch(createSyncFolderIntent())
+                launchSyncFolderPicker()
             }
             .show()
+    }
+
+    private fun launchSyncFolderPicker() {
+        val chooserIntent = Intent.createChooser(createSyncFolderIntent(), getString(R.string.sync_folder_picker_chooser_title))
+        runCatching {
+            syncFolderLauncher.launch(chooserIntent)
+        }.onFailure {
+            syncFolderLauncher.launch(createSyncFolderIntent())
+        }
     }
 
     private fun createSyncFolderIntent(): Intent {
@@ -269,9 +276,6 @@ class MainActivity : AppCompatActivity() {
             addFlags(Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
             putExtra(Intent.EXTRA_LOCAL_ONLY, false)
             putExtra(SHOW_ADVANCED_EXTRA, true)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                putExtra(DocumentsContract.EXTRA_INITIAL_URI, DocumentsContract.buildRootsUri(DRIVE_PROVIDER_AUTHORITY))
-            }
         }
     }
 
@@ -356,7 +360,6 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val GOOGLE_DRIVE_PACKAGE_NAME = "com.google.android.apps.docs"
-        private const val DRIVE_PROVIDER_AUTHORITY = "com.google.android.apps.docs.storage"
         private const val SHOW_ADVANCED_EXTRA = "android.content.extra.SHOW_ADVANCED"
     }
 }
