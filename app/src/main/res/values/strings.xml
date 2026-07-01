@@ -60,7 +60,7 @@
     <string name="auto_sync_picker_instructions">To store logs in Google Drive, first make sure the Drive app is installed and signed in. In the folder picker, open the side menu if needed, choose Google Drive, open or create a folder, then tap Use this folder.</string>
     <string name="open_google_drive_app">Open Google Drive App</string>
     <string name="open_sync_folder_picker">Open Folder Picker</string>
-    <string name="google_drive_not_installed">Google Drive is not installed on this phone, so its folder provider will not appear in the picker.</string>
+    <string name="google_drive_not_installed">Google Drive could not be opened directly from this app. Use the folder picker and choose Google Drive from the side menu.</string>
     <string name="geolocation_permissions_limited">Motion logging will continue, but the geolocation sidecar will be limited until location, Wi-Fi, and BLE permissions are granted.</string>
     <string name="log_file_details">%1$s • %2$s</string>
     <string name="unknown_sensor_value">Unknown</string>

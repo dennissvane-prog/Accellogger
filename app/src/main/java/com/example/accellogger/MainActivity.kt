@@ -278,7 +278,11 @@ class MainActivity : AppCompatActivity() {
     private fun openGoogleDriveApp() {
         val driveLaunchIntent = packageManager.getLaunchIntentForPackage(GOOGLE_DRIVE_PACKAGE_NAME)
         if (driveLaunchIntent != null) {
-            startActivity(driveLaunchIntent)
+            runCatching {
+                startActivity(driveLaunchIntent)
+            }.onFailure {
+                Toast.makeText(this, R.string.google_drive_not_installed, Toast.LENGTH_LONG).show()
+            }
             return
         }
 
