@@ -5,7 +5,7 @@ plugins {
 
 val versionMajor = 1
 val versionMinor = 0
-val versionBuild = 15
+val versionBuild = 16
 
 android {
     namespace = "com.example.accellogger"

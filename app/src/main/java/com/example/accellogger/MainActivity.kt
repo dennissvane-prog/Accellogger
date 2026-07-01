@@ -1,7 +1,9 @@
 package com.example.accellogger
 
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
+import android.provider.DocumentsContract
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.style.RelativeSizeSpan
@@ -34,7 +36,8 @@ class MainActivity : AppCompatActivity() {
             }
             viewModel.startLogging()
         }
-    private val syncFolderLauncher = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+    private val syncFolderLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val uri = result.data?.data
         if (uri == null) {
             return@registerForActivityResult
         }
@@ -92,7 +95,7 @@ class MainActivity : AppCompatActivity() {
         }
         binding.shareLastLogButton.setOnClickListener { shareLastLog() }
         binding.chooseSyncFolderButton.setOnClickListener {
-            syncFolderLauncher.launch(null)
+            showSyncFolderHelp()
         }
         binding.disableSyncButton.setOnClickListener {
             viewModel.clearAutoSync()
@@ -244,6 +247,44 @@ class MainActivity : AppCompatActivity() {
         geolocationPermissionLauncher.launch(missingPermissions)
     }
 
+    private fun showSyncFolderHelp() {
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.choose_sync_folder)
+            .setMessage(getString(R.string.auto_sync_picker_instructions))
+            .setNegativeButton(android.R.string.cancel, null)
+            .setNeutralButton(R.string.open_google_drive_app) { _, _ ->
+                openGoogleDriveApp()
+            }
+            .setPositiveButton(R.string.open_sync_folder_picker) { _, _ ->
+                syncFolderLauncher.launch(createSyncFolderIntent())
+            }
+            .show()
+    }
+
+    private fun createSyncFolderIntent(): Intent {
+        return Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
+            putExtra(Intent.EXTRA_LOCAL_ONLY, false)
+            putExtra(SHOW_ADVANCED_EXTRA, true)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                putExtra(DocumentsContract.EXTRA_INITIAL_URI, DocumentsContract.buildRootsUri(DRIVE_PROVIDER_AUTHORITY))
+            }
+        }
+    }
+
+    private fun openGoogleDriveApp() {
+        val driveLaunchIntent = packageManager.getLaunchIntentForPackage(GOOGLE_DRIVE_PACKAGE_NAME)
+        if (driveLaunchIntent != null) {
+            startActivity(driveLaunchIntent)
+            return
+        }
+
+        Toast.makeText(this, R.string.google_drive_not_installed, Toast.LENGTH_LONG).show()
+    }
+
     private fun formatElapsed(elapsedMs: Long): String {
         val hours = TimeUnit.MILLISECONDS.toHours(elapsedMs)
         val minutes = TimeUnit.MILLISECONDS.toMinutes(elapsedMs) % 60
@@ -307,5 +348,11 @@ class MainActivity : AppCompatActivity() {
         }
 
         ViewCompat.requestApplyInsets(root)
+    }
+
+    companion object {
+        private const val GOOGLE_DRIVE_PACKAGE_NAME = "com.google.android.apps.docs"
+        private const val DRIVE_PROVIDER_AUTHORITY = "com.google.android.apps.docs.storage"
+        private const val SHOW_ADVANCED_EXTRA = "android.content.extra.SHOW_ADVANCED"
     }
 }
