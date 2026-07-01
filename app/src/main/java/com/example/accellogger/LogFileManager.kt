@@ -18,6 +18,17 @@ import java.time.ZoneId
 
 class LogFileManager(private val context: Context) {
 
+    // Remembers the concrete content Uri created for each daily file name so later
+    // appends reuse the exact same MediaStore row. Relying only on a DISPLAY_NAME +
+    // RELATIVE_PATH query to "find today's file" is fragile on some OEM builds and can
+    // silently miss an existing row, causing every append to insert a fresh row that
+    // MediaStore then auto-renames with "(1)", "(2)", "(3)"... suffixes instead of a
+    // single file accumulating all of the day's rows.
+    private val fileUriPreferences = context.applicationContext.getSharedPreferences(
+        FILE_URI_PREFERENCES_NAME,
+        Context.MODE_PRIVATE,
+    )
+
     suspend fun appendEventWindow(eventWindow: LoggedEventWindow): LogFileItem? =
         withContext(Dispatchers.IO) {
             if (eventWindow.samples.isEmpty()) {
@@ -62,11 +73,15 @@ class LogFileManager(private val context: Context) {
 
     fun deleteLog(storageReference: String): Boolean {
         val uri = Uri.parse(storageReference)
-        return if (uri.scheme == "content") {
+        val deleted = if (uri.scheme == "content") {
             context.contentResolver.delete(uri, null, null) > 0
         } else {
             File(storageReference).takeIf { it.exists() }?.delete() == true
         }
+        if (deleted) {
+            uncacheFileUri(storageReference)
+        }
+        return deleted
     }
 
     fun deleteAllLogs(): Int {
@@ -97,9 +112,9 @@ class LogFileManager(private val context: Context) {
         rows: List<String>,
     ): LogFileItem {
         val relativePath = "${Environment.DIRECTORY_DOWNLOADS}/AccelLogger/"
-        val existingItem = findMediaStoreLog(fileName, relativePath)
+        val existingItem = resolveExistingMediaStoreLog(fileName, relativePath)
         val uri = existingItem?.let { Uri.parse(it.storageReference) }
-            ?: createMediaStoreLog(fileName, relativePath, timestampMs)
+            ?: createMediaStoreLog(fileName, relativePath, timestampMs).also { cacheFileUri(fileName, it) }
         val outputStream = context.contentResolver.openOutputStream(
             uri,
             if (existingItem == null) "w" else "wa",
@@ -175,6 +190,41 @@ class LogFileManager(private val context: Context) {
 
         return context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
             ?: throw IllegalStateException(context.getString(R.string.storage_unavailable_error))
+    }
+
+    private fun resolveExistingMediaStoreLog(fileName: String, relativePath: String): LogFileItem? {
+        cachedFileUri(fileName)?.let { cachedUri ->
+            queryMediaStoreLog(cachedUri)?.let { return it }
+            // Cached row no longer resolves (e.g. deleted outside the app); fall through
+            // to a fresh lookup/create instead of keeping a stale, dangling reference.
+            uncacheFileUri(cachedUri.toString())
+        }
+
+        return findMediaStoreLog(fileName, relativePath)?.also {
+            cacheFileUri(fileName, Uri.parse(it.storageReference))
+        }
+    }
+
+    private fun cachedFileUri(fileName: String): Uri? {
+        return fileUriPreferences.getString(fileName, null)?.let { Uri.parse(it) }
+    }
+
+    private fun cacheFileUri(fileName: String, uri: Uri) {
+        fileUriPreferences.edit().putString(fileName, uri.toString()).apply()
+    }
+
+    private fun uncacheFileUri(storageReference: String) {
+        val editor = fileUriPreferences.edit()
+        var changed = false
+        fileUriPreferences.all.forEach { (key, value) ->
+            if (value == storageReference) {
+                editor.remove(key)
+                changed = true
+            }
+        }
+        if (changed) {
+            editor.apply()
+        }
     }
 
     private fun findMediaStoreLog(fileName: String, relativePath: String): LogFileItem? {
@@ -346,6 +396,7 @@ class LogFileManager(private val context: Context) {
     }
 
     companion object {
+        private const val FILE_URI_PREFERENCES_NAME = "log_file_manager_file_uris"
         private const val PRIMARY_LOG_FILE_FORMAT_VERSION_SUFFIX = "_v2"
         private const val GEOLOCATION_LOG_FILE_FORMAT_VERSION_SUFFIX = "_v1"
         private const val PRIMARY_CSV_HEADER =
