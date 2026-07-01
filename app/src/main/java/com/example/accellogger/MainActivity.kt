@@ -7,7 +7,6 @@ import android.text.Spanned
 import android.text.style.RelativeSizeSpan
 import android.widget.EditText
 import android.widget.Toast
-import androidx.documentfile.provider.DocumentFile
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
@@ -18,6 +17,10 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.core.widget.doAfterTextChanged
 import com.example.accellogger.databinding.ActivityMainBinding
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.auth.api.signin.GoogleSignInOptions
+import com.google.android.gms.common.api.ApiException
+import com.google.android.gms.common.api.Scope
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import kotlinx.coroutines.launch
 import java.text.NumberFormat
@@ -27,6 +30,13 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private val viewModel: MainViewModel by viewModels()
+    private val googleSignInClient by lazy {
+        val options = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+            .requestEmail()
+            .requestScopes(Scope(DriveSyncConstants.DRIVE_SCOPE_URL))
+            .build()
+        GoogleSignIn.getClient(this, options)
+    }
     private val geolocationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grantResults ->
             if (grantResults.values.any { granted -> !granted }) {
@@ -34,25 +44,8 @@ class MainActivity : AppCompatActivity() {
             }
             viewModel.startLogging()
         }
-    private val syncFolderLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        val uri = result.data?.data
-        if (uri == null) {
-            return@registerForActivityResult
-        }
-
-        val permissionFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-        val persisted = runCatching {
-            contentResolver.takePersistableUriPermission(uri, permissionFlags)
-        }.isSuccess
-        if (!persisted) {
-            handleEvent(MainUiEvent.Error(getString(R.string.auto_sync_permission_error)))
-            return@registerForActivityResult
-        }
-
-        val folderName = DocumentFile.fromTreeUri(this, uri)?.name
-            ?.takeIf { it.isNotBlank() }
-            ?: getString(R.string.auto_sync_destination_selected)
-        viewModel.configureAutoSync(uri, folderName)
+    private val driveSignInLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        handleDriveSignInResult(result.data)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -93,9 +86,10 @@ class MainActivity : AppCompatActivity() {
         }
         binding.shareLastLogButton.setOnClickListener { shareLastLog() }
         binding.chooseSyncFolderButton.setOnClickListener {
-            showSyncFolderHelp()
+            showDriveSignInHelp()
         }
         binding.disableSyncButton.setOnClickListener {
+            googleSignInClient.signOut()
             viewModel.clearAutoSync()
         }
         binding.viewLogsButton.setOnClickListener {
@@ -188,7 +182,7 @@ class MainActivity : AppCompatActivity() {
         binding.syncStatusText.text = if (state.autoSyncEnabled) {
             getString(
                 R.string.auto_sync_status_enabled,
-                state.autoSyncDestinationLabel ?: getString(R.string.auto_sync_destination_selected),
+                state.autoSyncDestinationLabel.orEmpty(),
             )
         } else {
             getString(R.string.auto_sync_status_disabled)
@@ -245,52 +239,30 @@ class MainActivity : AppCompatActivity() {
         geolocationPermissionLauncher.launch(missingPermissions)
     }
 
-    private fun showSyncFolderHelp() {
+    private fun showDriveSignInHelp() {
         MaterialAlertDialogBuilder(this)
             .setTitle(R.string.choose_sync_folder)
-            .setMessage(getString(R.string.auto_sync_picker_instructions))
+            .setMessage(getString(R.string.drive_sign_in_help))
             .setNegativeButton(android.R.string.cancel, null)
-            .setNeutralButton(R.string.open_google_drive_app) { _, _ ->
-                openGoogleDriveApp()
-            }
-            .setPositiveButton(R.string.open_sync_folder_picker) { _, _ ->
-                launchSyncFolderPicker()
+            .setPositiveButton(R.string.sign_in_with_google) { _, _ ->
+                driveSignInLauncher.launch(googleSignInClient.signInIntent)
             }
             .show()
     }
 
-    private fun launchSyncFolderPicker() {
-        val chooserIntent = Intent.createChooser(createSyncFolderIntent(), getString(R.string.sync_folder_picker_chooser_title))
-        runCatching {
-            syncFolderLauncher.launch(chooserIntent)
-        }.onFailure {
-            syncFolderLauncher.launch(createSyncFolderIntent())
-        }
-    }
-
-    private fun createSyncFolderIntent(): Intent {
-        return Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-            addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-            addFlags(Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
-            putExtra(Intent.EXTRA_LOCAL_ONLY, false)
-            putExtra(SHOW_ADVANCED_EXTRA, true)
-        }
-    }
-
-    private fun openGoogleDriveApp() {
-        val driveLaunchIntent = packageManager.getLaunchIntentForPackage(GOOGLE_DRIVE_PACKAGE_NAME)
-        if (driveLaunchIntent != null) {
-            runCatching {
-                startActivity(driveLaunchIntent)
-            }.onFailure {
-                Toast.makeText(this, R.string.google_drive_not_installed, Toast.LENGTH_LONG).show()
+    private fun handleDriveSignInResult(data: Intent?) {
+        val task = GoogleSignIn.getSignedInAccountFromIntent(data)
+        try {
+            val account = task.getResult(ApiException::class.java)
+            val email = account.email
+            if (email.isNullOrBlank()) {
+                handleEvent(MainUiEvent.Error(getString(R.string.drive_sign_in_error, -1)))
+                return
             }
-            return
+            viewModel.configureDriveSync(email)
+        } catch (exception: ApiException) {
+            handleEvent(MainUiEvent.Error(getString(R.string.drive_sign_in_error, exception.statusCode)))
         }
-
-        Toast.makeText(this, R.string.google_drive_not_installed, Toast.LENGTH_LONG).show()
     }
 
     private fun formatElapsed(elapsedMs: Long): String {
@@ -356,10 +328,5 @@ class MainActivity : AppCompatActivity() {
         }
 
         ViewCompat.requestApplyInsets(root)
-    }
-
-    companion object {
-        private const val GOOGLE_DRIVE_PACKAGE_NAME = "com.google.android.apps.docs"
-        private const val SHOW_ADVANCED_EXTRA = "android.content.extra.SHOW_ADVANCED"
     }
 }

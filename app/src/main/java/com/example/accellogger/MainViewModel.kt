@@ -1,7 +1,6 @@
 package com.example.accellogger
 
 import android.app.Application
-import android.net.Uri
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -133,18 +132,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         appContext.startService(LoggingService.stopIntent(appContext))
     }
 
-    fun configureAutoSync(destinationTreeUri: Uri, destinationDisplayName: String) {
-        val folderName = destinationDisplayName.ifBlank {
-            appContext.getString(R.string.auto_sync_destination_selected)
-        }
-        autoSyncPreferences.saveDestination(destinationTreeUri, folderName)
+    fun configureDriveSync(accountEmail: String) {
+        autoSyncPreferences.saveAccount(accountEmail)
         LogSyncScheduler.enable(appContext)
         refreshAutoSyncConfig()
-        _events.tryEmit(MainUiEvent.Info(getString(R.string.auto_sync_configured_message, folderName)))
+        _events.tryEmit(MainUiEvent.Info(getString(R.string.auto_sync_configured_message, accountEmail)))
     }
 
     fun clearAutoSync() {
-        autoSyncPreferences.clearDestination()
+        autoSyncPreferences.clearAccount()
         LogSyncScheduler.disable(appContext)
         refreshAutoSyncConfig()
         _events.tryEmit(MainUiEvent.Info(getString(R.string.auto_sync_disabled_message)))
@@ -165,7 +161,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update {
             it.copy(
                 autoSyncEnabled = config.isEnabled,
-                autoSyncDestinationLabel = config.destinationDisplayName,
+                autoSyncDestinationLabel = config.accountEmail,
             )
         }
     }

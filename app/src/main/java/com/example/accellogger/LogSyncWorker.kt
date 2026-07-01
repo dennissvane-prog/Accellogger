@@ -1,10 +1,13 @@
 package com.example.accellogger
 
+import android.accounts.Account
 import android.content.Context
 import android.net.Uri
-import androidx.documentfile.provider.DocumentFile
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import com.google.android.gms.auth.GoogleAuthUtil
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
@@ -17,102 +20,75 @@ class LogSyncWorker(
     private val autoSyncPreferences = AutoSyncPreferences(appContext)
     private val logFileManager = LogFileManager(appContext)
 
-    override suspend fun doWork(): Result {
+    override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         val config = autoSyncPreferences.loadConfig()
-        val destinationTreeUri = config.destinationTreeUri ?: return Result.success()
-        val destinationDirectory = DocumentFile.fromTreeUri(applicationContext, destinationTreeUri)
-            ?: return Result.success()
+        val accountEmail = config.accountEmail ?: return@withContext Result.success()
 
+        val accessToken = try {
+            fetchAccessToken(accountEmail)
+        } catch (_: IOException) {
+            return@withContext Result.retry()
+        } catch (_: Exception) {
+            return@withContext Result.failure()
+        }
+
+        val client = DriveRestClient(accessToken)
+        val folderId = client.ensureFolder(config.folderId) ?: return@withContext Result.retry()
+        if (folderId != config.folderId) {
+            autoSyncPreferences.saveFolderId(folderId)
+        }
+
+        var hadFailure = false
+        logFileManager.listLogs().forEach { logItem ->
+            if (autoSyncPreferences.syncedFileSize(logItem.fileName) == logItem.sizeBytes) {
+                return@forEach
+            }
+
+            val content = readLogBytes(logItem.storageReference)
+            if (content == null) {
+                hadFailure = true
+                return@forEach
+            }
+
+            val existingFileId = client.findFile(logItem.fileName, folderId)
+            val succeeded = if (existingFileId != null) {
+                client.updateFileContent(existingFileId, CSV_MIME_TYPE, content)
+            } else {
+                client.uploadNewFile(logItem.fileName, folderId, CSV_MIME_TYPE, content) != null
+            }
+
+            if (succeeded) {
+                autoSyncPreferences.markFileSynced(logItem.fileName, logItem.sizeBytes)
+            } else {
+                hadFailure = true
+            }
+        }
+
+        if (hadFailure) Result.retry() else Result.success()
+    }
+
+    private fun fetchAccessToken(accountEmail: String): String {
+        val account = Account(accountEmail, GOOGLE_ACCOUNT_TYPE)
+        return GoogleAuthUtil.getToken(applicationContext, account, "oauth2:${DriveSyncConstants.DRIVE_SCOPE_URL}")
+    }
+
+    private fun readLogBytes(storageReference: String): ByteArray? {
         return try {
-            val logs = logFileManager.listLogs()
-            logs.forEach { logItem ->
-                if (!syncLog(logItem, destinationDirectory)) {
-                    return Result.retry()
+            when (val parsedUri = Uri.parse(storageReference)) {
+                Uri.EMPTY -> null
+                else -> if (parsedUri.scheme == "content") {
+                    applicationContext.contentResolver.openInputStream(parsedUri)?.use { it.readBytes() }
+                } else {
+                    FileInputStream(File(storageReference)).use { it.readBytes() }
                 }
             }
-            Result.success()
-        } catch (_: SecurityException) {
-            Result.success()
         } catch (_: IOException) {
-            Result.retry()
+            null
         }
     }
-
-    private fun syncLog(logItem: LogFileItem, destinationDirectory: DocumentFile): Boolean {
-        val existingFile = destinationDirectory.findFile(logItem.fileName)
-        if (existingFile != null && existingFile.length() == logItem.sizeBytes) {
-            return true
-        }
-
-        return if (existingFile == null) {
-            val destinationFile = destinationDirectory.createFile(CSV_MIME_TYPE, logItem.fileName)
-                ?: return false
-            copyLogContents(logItem.storageReference, destinationFile.uri)
-        } else {
-            replaceExistingFile(logItem, destinationDirectory, existingFile)
-        }
-    }
-
-    private fun replaceExistingFile(
-        logItem: LogFileItem,
-        destinationDirectory: DocumentFile,
-        existingFile: DocumentFile,
-    ): Boolean {
-        val temporaryFile = destinationDirectory.createFile(CSV_MIME_TYPE, "${logItem.fileName}.partial")
-            ?: return false
-
-        if (!copyLogContents(logItem.storageReference, temporaryFile.uri)) {
-            temporaryFile.delete()
-            return false
-        }
-
-        if (!existingFile.delete()) {
-            temporaryFile.delete()
-            return false
-        }
-
-        if (temporaryFile.renameTo(logItem.fileName)) {
-            return true
-        }
-
-        val destinationFile = destinationDirectory.createFile(CSV_MIME_TYPE, logItem.fileName)
-            ?: run {
-                temporaryFile.delete()
-                return false
-            }
-
-        val copiedFromTemporary = copyDocumentContents(temporaryFile.uri, destinationFile.uri)
-        temporaryFile.delete()
-        return copiedFromTemporary
-    }
-
-    private fun copyLogContents(storageReference: String, destinationUri: Uri): Boolean {
-        return openLocalInputStream(storageReference)?.use { inputStream ->
-            applicationContext.contentResolver.openOutputStream(destinationUri, "w")?.use { outputStream ->
-                inputStream.copyTo(outputStream)
-            }
-        } != null
-    }
-
-    private fun copyDocumentContents(sourceUri: Uri, destinationUri: Uri): Boolean {
-        return applicationContext.contentResolver.openInputStream(sourceUri)?.use { inputStream ->
-            applicationContext.contentResolver.openOutputStream(destinationUri, "w")?.use { outputStream ->
-                inputStream.copyTo(outputStream)
-            }
-        } != null
-    }
-
-    private fun openLocalInputStream(storageReference: String) =
-        when (val parsedUri = Uri.parse(storageReference)) {
-            Uri.EMPTY -> null
-            else -> if (parsedUri.scheme == "content") {
-                applicationContext.contentResolver.openInputStream(parsedUri)
-            } else {
-                FileInputStream(File(storageReference))
-            }
-        }
 
     companion object {
+        private const val GOOGLE_ACCOUNT_TYPE = "com.google"
         private const val CSV_MIME_TYPE = "text/csv"
     }
 }
