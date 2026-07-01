@@ -10,8 +10,12 @@ import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.net.wifi.WifiConfiguration
 import android.net.wifi.ScanResult as WifiScanResult
 import android.net.wifi.WifiManager
+import android.net.wifi.WifiNetworkSuggestion
 import android.os.Build
 import android.os.Looper
 import android.os.SystemClock
@@ -28,6 +32,8 @@ import kotlinx.coroutines.launch
 class GeolocationEvidenceCollector(private val context: Context) {
 
     private val appContext = context.applicationContext
+    private val connectivityManager =
+        appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
     private val locationManager = appContext.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
     private val wifiManager = appContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
     private val bluetoothManager = appContext.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
@@ -48,6 +54,7 @@ class GeolocationEvidenceCollector(private val context: Context) {
     private var wifiRefreshJob: Job? = null
     private var bleScanStarted = false
     private var locationUpdatesStarted = false
+    private var lastSuggestedOpenSsids: Set<String> = emptySet()
     private val recentBleObservations = LinkedHashMap<String, BleBeaconObservation>()
 
     private val locationListener = object : LocationListener {
@@ -92,6 +99,7 @@ class GeolocationEvidenceCollector(private val context: Context) {
         wifiRefreshJob = null
         stopLocationUpdates()
         stopBleScan()
+        clearOpenWifiSuggestions()
         latestLocation = null
         latestWifiObservationTimeMs = null
         latestWifiAccessPoints = emptyList()
@@ -206,14 +214,17 @@ class GeolocationEvidenceCollector(private val context: Context) {
     private fun refreshWifiEvidence() {
         val manager = wifiManager ?: return
         if (!hasWifiPermissions()) {
+            clearOpenWifiSuggestions()
             latestWifiObservationTimeMs = null
             latestWifiAccessPoints = emptyList()
             return
         }
 
-        val observation = buildWifiObservation(manager)
+        val scanResults = runCatching { manager.scanResults }.getOrNull().orEmpty()
+        val observation = buildWifiObservation(manager, scanResults)
         latestWifiObservationTimeMs = observation.observedAtMs
         latestWifiAccessPoints = observation.accessPoints
+        maybeConnectToOpenWifi(manager, scanResults)
 
         runCatching {
             if (manager.isWifiEnabled) {
@@ -222,13 +233,15 @@ class GeolocationEvidenceCollector(private val context: Context) {
         }
     }
 
-    private fun buildWifiObservation(manager: WifiManager): WifiObservation {
+    private fun buildWifiObservation(
+        manager: WifiManager,
+        scanResults: List<WifiScanResult>,
+    ): WifiObservation {
         val nowWallClockMs = System.currentTimeMillis()
         val nowElapsedRealtimeNs = SystemClock.elapsedRealtimeNanos()
         val accessPointsByBssid = LinkedHashMap<String, WifiAccessPointEvidence>()
         var latestObservedAtMs: Long? = null
 
-        val scanResults = runCatching { manager.scanResults }.getOrNull().orEmpty()
         scanResults
             .sortedByDescending { it.level }
             .forEach { result ->
@@ -260,6 +273,165 @@ class GeolocationEvidenceCollector(private val context: Context) {
             observedAtMs = latestObservedAtMs,
             accessPoints = accessPointsByBssid.values.toList(),
         )
+    }
+
+    private fun maybeConnectToOpenWifi(
+        manager: WifiManager,
+        scanResults: List<WifiScanResult>,
+    ) {
+        if (!hasWifiPermissions()) {
+            return
+        }
+
+        val candidates = openWifiCandidates(scanResults)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            updateOpenWifiSuggestions(manager, candidates)
+            return
+        }
+
+        if (isValidatedWifiConnection()) {
+            return
+        }
+
+        if (!runCatching { manager.isWifiEnabled }.getOrDefault(false)) {
+            runCatching { manager.setWifiEnabled(true) }
+        }
+
+        val candidate = candidates.firstOrNull() ?: return
+        connectToLegacyOpenWifi(manager, candidate)
+    }
+
+    private fun openWifiCandidates(scanResults: List<WifiScanResult>): List<WifiScanResult> {
+        return scanResults
+            .asSequence()
+            .filter { result ->
+                result.SSID.isNotBlank() &&
+                    result.SSID != UNKNOWN_SSID &&
+                    result.BSSID?.let(::isUsableBssid) == true &&
+                    isOpenWifiNetwork(result)
+            }
+            .groupBy { it.SSID }
+            .values
+            .mapNotNull { resultsForSsid -> resultsForSsid.maxByOrNull { it.level } }
+            .sortedByDescending { it.level }
+            .take(MAX_OPEN_WIFI_CANDIDATES)
+            .toList()
+    }
+
+    private fun isOpenWifiNetwork(result: WifiScanResult): Boolean {
+        val capabilities = result.capabilities.orEmpty().uppercase()
+        return SECURE_WIFI_CAPABILITY_MARKERS.none { marker -> capabilities.contains(marker) }
+    }
+
+    private fun updateOpenWifiSuggestions(
+        manager: WifiManager,
+        candidates: List<WifiScanResult>,
+    ) {
+        val desiredSsids = candidates.map { it.SSID }.toSet()
+        if (desiredSsids == lastSuggestedOpenSsids) {
+            return
+        }
+
+        val previousSuggestions = buildOpenWifiSuggestions(lastSuggestedOpenSsids)
+        if (previousSuggestions.isNotEmpty()) {
+            runCatching { manager.removeNetworkSuggestions(previousSuggestions) }
+        }
+
+        val desiredSuggestions = buildOpenWifiSuggestions(desiredSsids)
+        if (desiredSuggestions.isEmpty()) {
+            lastSuggestedOpenSsids = emptySet()
+            return
+        }
+
+        val added = addWifiSuggestions(manager, desiredSuggestions)
+        if (added) {
+            lastSuggestedOpenSsids = desiredSsids
+        }
+    }
+
+    private fun addWifiSuggestions(
+        manager: WifiManager,
+        suggestions: List<WifiNetworkSuggestion>,
+    ): Boolean {
+        val status = runCatching { manager.addNetworkSuggestions(suggestions) }.getOrNull()
+        if (status == WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS) {
+            return true
+        }
+
+        if (status == WifiManager.STATUS_NETWORK_SUGGESTIONS_ERROR_ADD_DUPLICATE) {
+            runCatching { manager.removeNetworkSuggestions(suggestions) }
+            val retryStatus = runCatching { manager.addNetworkSuggestions(suggestions) }.getOrNull()
+            return retryStatus == WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS
+        }
+
+        return false
+    }
+
+    private fun buildOpenWifiSuggestions(ssids: Set<String>): List<WifiNetworkSuggestion> {
+        return ssids.map { ssid ->
+            WifiNetworkSuggestion.Builder()
+                .setSsid(ssid)
+                .setIsAppInteractionRequired(false)
+                .build()
+        }
+    }
+
+    private fun clearOpenWifiSuggestions() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            return
+        }
+
+        val manager = wifiManager ?: return
+        val suggestions = buildOpenWifiSuggestions(lastSuggestedOpenSsids)
+        if (suggestions.isNotEmpty()) {
+            runCatching { manager.removeNetworkSuggestions(suggestions) }
+        }
+        lastSuggestedOpenSsids = emptySet()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun connectToLegacyOpenWifi(
+        manager: WifiManager,
+        candidate: WifiScanResult,
+    ) {
+        val targetSsid = candidate.SSID.takeIf { it.isNotBlank() } ?: return
+        val currentlyConnectedSsid = runCatching { manager.connectionInfo?.ssid }
+            .getOrNull()
+            ?.trim('"')
+        if (currentlyConnectedSsid == targetSsid && isValidatedWifiConnection()) {
+            return
+        }
+
+        val quotedSsid = '"' + targetSsid + '"'
+        val existingNetworkId = runCatching { manager.configuredNetworks.orEmpty() }
+            .getOrDefault(emptyList())
+            .firstOrNull { config -> config.SSID == quotedSsid }
+            ?.networkId
+
+        val networkId = existingNetworkId ?: manager.addNetwork(
+            WifiConfiguration().apply {
+                SSID = quotedSsid
+                allowedKeyManagement.set(WifiConfiguration.KeyMgmt.NONE)
+            },
+        )
+
+        if (networkId < 0) {
+            return
+        }
+
+        runCatching { manager.disconnect() }
+        val enabled = runCatching { manager.enableNetwork(networkId, true) }.getOrDefault(false)
+        if (enabled) {
+            runCatching { manager.reconnect() }
+        }
+    }
+
+    private fun isValidatedWifiConnection(): Boolean {
+        val manager = connectivityManager ?: return false
+        val activeNetwork = manager.activeNetwork ?: return false
+        val capabilities = manager.getNetworkCapabilities(activeNetwork) ?: return false
+        return capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
     }
 
     private fun ensureBleScanStarted() {
@@ -434,6 +606,8 @@ class GeolocationEvidenceCollector(private val context: Context) {
         private const val WIFI_REFRESH_INTERVAL_MS = 30_000L
         private const val BLE_RETENTION_MS = 60_000L
         private const val UNKNOWN_BSSID = "02:00:00:00:00:00"
+        private const val UNKNOWN_SSID = "<unknown ssid>"
+        private const val MAX_OPEN_WIFI_CANDIDATES = 5
 
         private const val STATUS_AVAILABLE = "available"
         private const val STATUS_PERMISSION_MISSING = "permission_missing"
@@ -441,6 +615,15 @@ class GeolocationEvidenceCollector(private val context: Context) {
         private const val STATUS_UNSUPPORTED = "unsupported"
         private const val STATUS_UNAVAILABLE = "unavailable"
         private const val STATUS_WIFI_DISABLED = "wifi_disabled"
+        private val SECURE_WIFI_CAPABILITY_MARKERS = listOf(
+            "WEP",
+            "PSK",
+            "EAP",
+            "SAE",
+            "SUITE_B",
+            "OWE",
+            "WAPI",
+        )
 
         private val ACTIVE_LOCATION_PROVIDERS = listOf(
             LocationManager.GPS_PROVIDER,
